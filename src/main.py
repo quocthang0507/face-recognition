@@ -23,7 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -46,7 +46,7 @@ from .services import (
     StudentService,
 )
 from .storage import PrivateStorage
-from .stream_processor import StreamProcessor, decode_jpeg
+from .stream_processor import BEHAVIOR_LABELS, StreamProcessor, decode_jpeg
 
 storage = PrivateStorage()
 
@@ -62,12 +62,23 @@ def _cleanup_expired_logs() -> None:
         BehaviorLogService.cleanup_old(db, storage, settings.retention_days)
 
 
+def _preload_models() -> None:
+    try:
+        from .face_engine import FaceRecognitionEngine
+        engine = FaceRecognitionEngine()
+        if engine.detection_available:
+            engine._embedding_provider()
+    except Exception as exc:
+        print(f"Lỗi tải trước mô hình AI: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Initialize tables and retention cleanup at application startup."""
 
     create_tables()
     await asyncio.to_thread(_cleanup_expired_logs)
+    asyncio.create_task(asyncio.to_thread(_preload_models))
     cleanup_task = asyncio.create_task(_retention_cleanup_loop())
     try:
         yield
@@ -111,7 +122,7 @@ def _require_secure_request(request: Request) -> None:
     forwarded_proto = request.headers.get("x-forwarded-proto")
     if settings.secure_transport_only and request.url.scheme != "https":
         if forwarded_proto != "https":
-            raise HTTPException(status_code=400, detail="HTTPS is required")
+            raise HTTPException(status_code=400, detail="Yêu cầu kết nối bảo mật HTTPS")
 
 
 def _domain_error(exc: DomainError) -> HTTPException:
@@ -125,12 +136,19 @@ def dashboard() -> str:
     return (BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    """Serve the favicon image."""
+
+    return FileResponse(BASE_DIR / "static" / "favicon.png")
+
+
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, response: Response) -> dict[str, str]:
     """Authenticate the teacher and set an HttpOnly cookie."""
 
     if not password_matches(payload.password):
-        raise HTTPException(status_code=401, detail="Invalid teacher password")
+        raise HTTPException(status_code=401, detail="Mật khẩu giáo viên không chính xác")
     response.set_cookie(
         key=settings.cookie_name,
         value=issue_teacher_token(),
@@ -181,28 +199,35 @@ def list_students(db: Annotated[Session, Depends(get_db)]) -> list[dict[str, obj
 async def register_student(
     student_code: Annotated[str, Form()],
     fullname: Annotated[str, Form()],
-    image: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
+    image: UploadFile | None = None,
 ) -> dict[str, object]:
-    """Register a student from one webcam JPEG or uploaded image."""
+    """Register a student from one webcam JPEG or uploaded image (optional)."""
 
-    if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise HTTPException(status_code=415, detail="JPEG, PNG or WebP image required")
-    content = await image.read()
-    if not content or len(content) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Image must be between 1B and 5MB")
     if db.scalar(select(Student).where(Student.student_code == student_code.strip())):
-        raise HTTPException(status_code=409, detail="Student code already exists")
-    try:
-        frame = await asyncio.to_thread(decode_jpeg, content)
-        embedding = await asyncio.to_thread(
-            FaceRecognitionEngine().registration_embedding, frame
-        )
-    except FaceEngineUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    avatar_path = storage.save_avatar(content)
+        raise HTTPException(status_code=409, detail="Mã học sinh đã tồn tại")
+
+    embedding = None
+    avatar_path = None
+
+    if image is not None and image.filename:
+        content = await image.read()
+        if content:
+            if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+                raise HTTPException(status_code=415, detail="Yêu cầu định dạng ảnh JPEG, PNG hoặc WebP")
+            if len(content) > 5 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Dung lượng ảnh phải nằm trong khoảng từ 1B đến 5MB")
+            try:
+                frame = await asyncio.to_thread(decode_jpeg, content)
+                embedding = await asyncio.to_thread(
+                    FaceRecognitionEngine().registration_embedding, frame
+                )
+                avatar_path = storage.save_avatar(content)
+            except FaceEngineUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     try:
         student = StudentService.register(
             db, student_code, fullname, embedding, avatar_path
@@ -219,7 +244,7 @@ def get_avatar(name: str) -> Response:
     try:
         return Response(storage.read_avatar(name), media_type="image/jpeg")
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Avatar not found") from exc
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh đại diện") from exc
 
 
 @app.post("/api/sessions", dependencies=[Depends(require_teacher)])
@@ -294,7 +319,8 @@ def recent_behaviors(
         {
             "id": log.id,
             "behavior_type": log.behavior_type,
-            "fullname": log.student.fullname if log.student else "Unknown",
+            "label": BEHAVIOR_LABELS.get(log.behavior_type, log.behavior_type),
+            "fullname": log.student.fullname if log.student else "Không rõ",
             "timestamp": log.timestamp.isoformat(),
             "snapshot_url": f"/api/snapshots/{log.snapshot_path}",
         }
@@ -316,7 +342,7 @@ def get_snapshot(name: str) -> Response:
     try:
         return Response(storage.read_snapshot(name), media_type="image/jpeg")
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Snapshot not found") from exc
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh chụp bằng chứng") from exc
 
 
 @app.websocket("/ws")
@@ -333,6 +359,8 @@ async def video_stream(websocket: WebSocket) -> None:
     try:
         while True:
             message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect(code=message.get("code", 1000))
             behavior_config = _websocket_behavior_config(message)
             if behavior_config is not None:
                 processor.set_enabled_behaviors(behavior_config)
@@ -357,11 +385,11 @@ async def video_stream(websocket: WebSocket) -> None:
 def _verify_websocket(websocket: WebSocket) -> None:
     origin = websocket.headers.get("origin")
     if origin and origin not in settings.allowed_origins:
-        raise AuthenticationError("WebSocket origin is not allowed")
+        raise AuthenticationError("Nguồn kết nối WebSocket không được cho phép")
     forwarded_proto = websocket.headers.get("x-forwarded-proto")
     if settings.secure_transport_only and websocket.url.scheme != "wss":
         if forwarded_proto not in {"https", "wss"}:
-            raise AuthenticationError("WSS is required")
+            raise AuthenticationError("Yêu cầu kết nối bảo mật WSS")
     verify_teacher_token(websocket.cookies.get(settings.cookie_name))
 
 
@@ -375,8 +403,8 @@ def _websocket_frame_bytes(message: dict[str, object]) -> bytes:
         try:
             return base64.b64decode(encoded, validate=True)
         except binascii.Error as exc:
-            raise ValueError("Invalid base64 webcam frame") from exc
-    raise ValueError("WebSocket frame must contain JPEG bytes")
+            raise ValueError("Khung hình webcam base64 không hợp lệ") from exc
+    raise ValueError("Khung hình WebSocket phải chứa định dạng JPEG")
 
 
 def _websocket_behavior_config(message: dict[str, object]) -> list[str] | None:
@@ -388,14 +416,14 @@ def _websocket_behavior_config(message: dict[str, object]) -> list[str] | None:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError("Invalid WebSocket JSON command") from exc
+        raise ValueError("Lệnh JSON WebSocket không hợp lệ") from exc
     if not isinstance(payload, dict) or payload.get("type") != "behavior_config":
-        raise ValueError("Unsupported WebSocket command")
+        raise ValueError("Lệnh WebSocket không được hỗ trợ")
     enabled_behaviors = payload.get("enabled_behaviors")
     if not isinstance(enabled_behaviors, list) or not all(
         isinstance(item, str) for item in enabled_behaviors
     ):
-        raise ValueError("enabled_behaviors must be a list of strings")
+        raise ValueError("enabled_behaviors phải là một danh sách chuỗi")
     return enabled_behaviors
 
 

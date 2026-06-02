@@ -56,8 +56,8 @@ class DeepFaceEmbeddingProvider:
             from deepface import DeepFace
         except ImportError as exc:
             raise FaceEngineUnavailable(
-                "DeepFace is required for registration and recognition. "
-                "Install requirements-ai.txt."
+                "Thư viện DeepFace là bắt buộc để đăng ký và nhận diện khuôn mặt. "
+                "Vui lòng cài đặt requirements-ai.txt."
             ) from exc
         self._deepface = DeepFace
 
@@ -176,10 +176,10 @@ class FaceRecognitionEngine:
         """Extract a face embedding from the largest face in an uploaded image."""
 
         if not self.locator.available:
-            raise FaceEngineUnavailable("MediaPipe face detection is not available")
+            raise FaceEngineUnavailable("Tính năng phát hiện khuôn mặt MediaPipe không khả dụng")
         boxes = self.locator.locate(frame)
         if not boxes:
-            raise ValueError("No face was detected in the registration image")
+            raise ValueError("Không phát hiện khuôn mặt trong ảnh đăng ký")
         face_box = max(boxes, key=lambda box: box.width * box.height)
         return self._embedding_provider().embed(crop_face(frame, face_box))
 
@@ -210,7 +210,7 @@ class FaceRecognitionEngine:
                     candidate.box,
                     None,
                     None,
-                    "Unknown",
+                    "Không rõ",
                     0.0,
                     candidate.track_id or None,
                 )
@@ -219,9 +219,11 @@ class FaceRecognitionEngine:
             self._cache_tracked_matches()
             return self._cached_matches, True
         provider = self._embedding_provider()
-        known_embeddings = [
-            (student, deserialize_embedding(student.embedding)) for student in students
-        ]
+        known_embeddings = []
+        for student in students:
+            emb = deserialize_embedding(student.embedding)
+            if emb:
+                known_embeddings.append((student, emb))
         matches: list[FaceMatch] = []
         for candidate in candidates:
             try:
@@ -236,7 +238,7 @@ class FaceRecognitionEngine:
                     box=candidate.box,
                     student_id=student.id if student else None,
                     student_code=student.student_code if student else None,
-                    fullname=student.fullname if student else "Unknown",
+                    fullname=student.fullname if student else "Không rõ",
                     confidence=confidence,
                     track_id=candidate.track_id or None,
                 )
@@ -266,7 +268,7 @@ class FaceRecognitionEngine:
                         tracked_box.box,
                         None,
                         None,
-                        "Unknown",
+                        "Không rõ",
                         0.0,
                         tracked_box.track_id,
                     )

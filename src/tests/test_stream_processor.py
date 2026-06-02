@@ -39,9 +39,9 @@ def test_behavior_alert_is_returned_without_active_classroom_session() -> None:
         {
             "id": None,
             "behavior_type": "SLEEPING",
-            "label": "Sleeping",
+            "label": "Ngủ gục",
             "student_id": None,
-            "fullname": "Unknown",
+            "fullname": "Không rõ",
             "snapshot_url": None,
         }
     ]

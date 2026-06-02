@@ -23,10 +23,10 @@ from .storage import PrivateStorage
 from .tracking import TrackedBox
 
 BEHAVIOR_LABELS = {
-    "SLEEPING": "Sleeping",
-    "HAND_ON_FACE": "Hand on face",
-    "CHEATING": "Looking away",
-    "TALKING": "Talking",
+    "SLEEPING": "Ngủ gục",
+    "HAND_ON_FACE": "Chống tay",
+    "CHEATING": "Quay cóp",
+    "TALKING": "Nói chuyện",
 }
 
 
@@ -111,20 +111,28 @@ class StreamProcessor:
         frame = decode_jpeg(raw_jpeg)
         students = StudentService.list_all(db)
         errors: list[str] = []
-        behaviors = self.behavior_engine.analyze(frame)
+        active_session = ClassroomService.get_active_session(db)
+        if active_session is not None:
+            behaviors = self.behavior_engine.analyze(frame)
+        else:
+            behaviors = []
         tracked_boxes = [
             TrackedBox(behavior.track_id, behavior.box) for behavior in behaviors
         ]
+        # When behavior analysis is skipped (no active session), pass None
+        # so the face engine falls back to its own MediaPipe face locator.
+        use_tracked_boxes = (
+            tracked_boxes if (self.behavior_engine.available and behaviors) else None
+        )
         try:
             matches, refreshed = self.face_engine.recognize_if_due(
                 frame,
                 students,
-                tracked_boxes=tracked_boxes if self.behavior_engine.available else None,
+                tracked_boxes=use_tracked_boxes,
             )
         except FaceEngineUnavailable as exc:
             matches, refreshed = [], False
             errors.append(str(exc))
-        active_session = ClassroomService.get_active_session(db)
         if active_session and refreshed:
             for student_id in self.attendance.observe(matches):
                 ClassroomService.mark_present(db, active_session.id, student_id)
@@ -165,7 +173,7 @@ class StreamProcessor:
                     "behavior_type": behavior_type,
                     "label": BEHAVIOR_LABELS[behavior_type],
                     "student_id": identity.student_id if identity else None,
-                    "fullname": identity.fullname if identity else "Unknown",
+                    "fullname": identity.fullname if identity else "Không rõ",
                     "snapshot_url": None,
                 }
                 if active_session is not None:
@@ -219,6 +227,7 @@ def draw_overlay(
 
     try:
         import cv2
+        import numpy as np
     except ImportError:
         return
     for match in matches:
@@ -227,26 +236,86 @@ def draw_overlay(
         cv2.rectangle(
             frame, (box.x, box.y), (box.x + box.width, box.y + box.height), color, 2
         )
-        label = f"{match.fullname} {match.confidence:.0f}%"
-        cv2.putText(
-            frame,
-            label,
-            (box.x, max(22, box.y - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            color,
-            2,
-        )
-    for behavior in behaviors:
-        if not behavior.alerts:
-            continue
-        label = ", ".join(BEHAVIOR_LABELS[item] for item in behavior.alerts)
-        cv2.putText(
-            frame,
-            label,
-            (behavior.box.x, behavior.box.y + behavior.box.height + 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (30, 30, 230),
-            2,
-        )
+
+    if not matches and not behaviors:
+        return
+
+    def draw_fallback():
+        for match in matches:
+            box = match.box
+            color = (40, 220, 130) if match.student_id else (70, 170, 255)
+            label = f"{match.fullname} {match.confidence:.0f}%"
+            cv2.putText(
+                frame,
+                label,
+                (box.x, max(22, box.y - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                color,
+                2,
+            )
+        for behavior in behaviors:
+            if not behavior.alerts:
+                continue
+            label = ", ".join(BEHAVIOR_LABELS[item] for item in behavior.alerts)
+            cv2.putText(
+                frame,
+                label,
+                (behavior.box.x, behavior.box.y + behavior.box.height + 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (30, 30, 230),
+                2,
+            )
+
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        # Convert to PIL RGB for Unicode drawing
+        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
+
+        try:
+            font = ImageFont.truetype("Arial.ttf", 15)
+        except OSError:
+            try:
+                font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 15)
+            except OSError:
+                font = ImageFont.load_default()
+
+        for match in matches:
+            box = match.box
+            color = (130, 220, 40) if match.student_id else (255, 170, 70)  # RGB
+            label = f"{match.fullname} {match.confidence:.0f}%"
+            y_pos = max(5, box.y - 20)
+            try:
+                bbox = draw.textbbox((box.x, y_pos), label, font=font)
+                draw.rectangle(bbox, fill=(0, 0, 0))
+            except Exception:
+                pass
+            draw.text((box.x, y_pos), label, font=font, fill=color)
+
+        for behavior in behaviors:
+            if not behavior.alerts:
+                continue
+            label = ", ".join(BEHAVIOR_LABELS[item] for item in behavior.alerts)
+            color = (230, 30, 30)  # RGB (Red)
+            y_pos = behavior.box.y + behavior.box.height + 5
+            try:
+                bbox = draw.textbbox((behavior.box.x, y_pos), label, font=font)
+                draw.rectangle(bbox, fill=(0, 0, 0))
+            except Exception:
+                pass
+            draw.text(
+                (behavior.box.x, y_pos),
+                label,
+                font=font,
+                fill=color,
+            )
+
+        # Convert back to BGR and copy in-place
+        bgr_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        frame[:] = bgr_img
+    except Exception as exc:
+        print(f"Pillow drawing error: {exc}. Falling back to OpenCV draw.")
+        draw_fallback()

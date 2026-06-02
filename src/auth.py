@@ -45,7 +45,7 @@ def verify_teacher_token(token: str | None, now: int | None = None) -> None:
     """Validate a teacher token and raise on invalid input."""
 
     if not token:
-        raise AuthenticationError("Missing teacher token")
+        raise AuthenticationError("Thiếu token giáo viên")
     try:
         payload, supplied_signature = token.split(".", maxsplit=1)
         expected_signature = hmac.new(
@@ -54,15 +54,15 @@ def verify_teacher_token(token: str | None, now: int | None = None) -> None:
             hashlib.sha256,
         ).digest()
         if not hmac.compare_digest(expected_signature, _decode(supplied_signature)):
-            raise AuthenticationError("Invalid teacher token")
+            raise AuthenticationError("Token giáo viên không hợp lệ")
         content = json.loads(_decode(payload))
         current_time = int(time.time() if now is None else now)
         if content.get("role") != "teacher" or int(content["exp"]) < current_time:
-            raise AuthenticationError("Expired teacher token")
+            raise AuthenticationError("Token giáo viên đã hết hạn")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         if isinstance(exc, AuthenticationError):
             raise
-        raise AuthenticationError("Invalid teacher token") from exc
+        raise AuthenticationError("Token giáo viên không hợp lệ") from exc
 
 
 def password_matches(password: str) -> bool:

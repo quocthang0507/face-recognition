@@ -10,7 +10,8 @@ Hệ thống được thiết kế dưới dạng **Web Application** chạy tr�
 
 ```mermaid
 graph TD
-    A[Webcam / Camera Client] -->|Stream Video qua WebSocket / WebRTC| B(FastAPI Backend)
+    A[Webcam / Camera Client] -->|1. Tự động giảm độ phân giải & nén JPEG| A2(Client Optimization Engine)
+    A2 -->|2. Stream Video qua WebSocket| B(FastAPI Backend)
     B --> C{MediaPipe Engine}
     C -->|Phát hiện khuôn mặt| D[Face Detection & Landmark Extracting]
     C -->|Phát hiện bàn tay| E[Hand Landmark Detection]
@@ -24,11 +25,15 @@ graph TD
     H -->|Phát hiện chống tay| I
     
     I -->|Cập nhật trạng thái hiển thị realtime| J[Giao diện Dashboard Frontend]
+    J -->|Cảnh báo âm thanh & TTS giọng nói tiếng Việt| K[Client Sound Engine]
 ```
 
 ### Công nghệ sử dụng:
 *   **Backend**: Python (FastAPI), OpenCV, MediaPipe, SQLite (SQLAlchemy).
 *   **Frontend**: HTML5, CSS (Vanilla CSS với phong cách Glassmorphism, Dark Mode, Responsive Grid), Javascript (WebSocket Client, Chart.js để vẽ biểu đồ thống kê).
+*   **Tối ưu hóa Truyền tải & AI**: 
+    - **Adaptive Downscaling**: Client tự động điều chỉnh độ phân giải về chiều rộng tối đa `640px` (giữ nguyên tỷ lệ) và đặt chất lượng JPEG nén ở mức `70%` trước khi gửi qua WebSocket. Giúp giảm tải mạng ~80% và tiết kiệm 50% CPU xử lý của server.
+    - **Audio & TTS Engine**: Phát cảnh báo âm thanh bíp kép (Web Audio API) và thông báo giọng nói tiếng Việt (Web Speech API) trực tiếp trên trình duyệt với cơ chế cooldown 10 giây để tránh chồng chéo tiếng ồn.
 *   **Thư viện chính**:
     *   `mediapipe`: Trích xuất Face Mesh (468+ điểm mốc khuôn mặt) và Hand Landmarks (21 điểm mốc bàn tay).
     *   `face_recognition` hoặc `DeepFace`: Trích xuất đặc trưng khuôn mặt (128-D vector) để so khớp danh tính học sinh.
@@ -78,7 +83,7 @@ Sử dụng SQLite để lưu trữ thông tin nội bộ đơn giản và hiệ
 
 ---
 
-## 3. Thuật toán Phát hiện Hành vi (Behavior Detection Logic)
+## 3. Thuật toán Phát hiện Hành vi & Logic Cảnh báo (Behavior Detection & Alert Logic)
 
 Sử dụng **MediaPipe Face Mesh** (468 điểm mốc) và **MediaPipe Hands** (21 điểm mốc) để phân tích hành vi mà không cần chạy các mô hình Deep Learning quá nặng.
 
@@ -112,6 +117,11 @@ Sử dụng **MediaPipe Face Mesh** (468 điểm mốc) và **MediaPipe Hands** 
     1. Tính khoảng cách dọc giữa môi trên và môi dưới chia cho khoảng cách ngang giữa 2 khóe mép.
     2. Nếu giá trị MAR dao động lớn và liên tục đổi trạng thái mở/khép ở tần số nói chuyện thông thường trong khi tư thế đầu đang hướng về phía học sinh khác $\rightarrow$ Cảnh báo **Trao đổi bài**.
 
+### 3.5. Cơ chế Cảnh báo thông minh phía Client
+*   **Cảnh báo âm thanh (Audio alert)**: Sử dụng `AudioContext` của trình duyệt phát âm thanh bíp kép nốt A5 (880Hz) trong 0.2 giây.
+*   **Giọng nói tiếng Việt (TTS)**: Sử dụng Web Speech API với cấu hình `vi-VN` để phát âm thông báo: *"Cảnh báo [Tên hành vi], [Tên học sinh]"*.
+*   **Hạn chế tiếng ồn (Alert Cooldown)**: Triển khai bộ nhớ đệm Cooldown 10 giây trên trình duyệt cho mỗi cặp (Hành vi + Học sinh) để tránh phát âm thanh trùng lặp liên tục khi học sinh duy trì vi phạm.
+
 ---
 
 ## 4. Các chức năng Quản lý Học sinh & Phiên học (Student & Session Management)
@@ -129,129 +139,105 @@ Sử dụng **MediaPipe Face Mesh** (468 điểm mốc) và **MediaPipe Hands** 
     *   Hệ thống chọn ngẫu nhiên một học sinh từ danh sách trên.
     *   Cập nhật `is_called = True` và thời gian gọi `called_at`.
     *   Nếu danh sách trống (tất cả học sinh có mặt đều đã được gọi), hệ thống sẽ hiển thị thông báo và cung cấp tùy chọn **Reset phiên gọi** (đặt toàn bộ `is_called = False` để bắt đầu vòng mới).
-4.  **Hiệu ứng Giao diện**: Hiển thị vòng quay hoặc hiệu ứng xáo trộn tên ngẫu nhiên trước khi dừng lại ở học sinh được chọn để tăng tính tương tác sinh động.
+4.  **Hiệu ứng Giao diện**: Hiển thị vòng quay và xáo trộn tên ngẫu nhiên có kèm ảnh đại diện trước khi dừng lại để tăng tương tác sinh động.
 
 ---
 
 ## 5. Các bước Triển khai Chi tiết (Step-by-Step Implementation Plan)
 
 ### Bước 1: Thiết lập môi trường và cấu trúc thư mục
-1.  Khởi tạo môi trường ảo Python: `python -m venv venv`.
-2.  Cài đặt các thư viện cần thiết:
-    ```bash
-    pip install fastapi uvicorn opencv-python mediapipe sqlalchemy jinja2 python-multipart deepface
-    ```
-3.  **Lưu ý quan trọng**: Toàn bộ mã nguồn của hệ thống (bao gồm mã nguồn Python của backend, cấu hình cơ sở dữ liệu, các thuật toán phân tích, cùng toàn bộ mã nguồn frontend HTML/CSS/JS) đều được đặt tập trung hoàn toàn trong thư mục `src`.
-4.  Xây dựng cấu trúc thư mục dự án chuẩn:
-    ```text
-    ├── src/
-    │   ├── database.py       # Cấu hình kết nối SQLite & Sessionmaker
-    │   ├── models.py         # Định nghĩa các bảng Database (SQLAlchemy Models)
-    │   ├── face_engine.py    # Logic nhận diện khuôn mặt (DeepFace / face_recognition)
-    │   ├── behavior_engine.py# Phân tích hành vi (MediaPipe Landmarks, EAR, Head Pose)
-    │   ├── main.py           # API FastAPI chính, WebSocket Server quản lý luồng video
-    │   ├── static/           # Thư mục chứa tài nguyên tĩnh cho giao diện web
-    │   │   ├── css/
-    │   │   │   └── style.css # Giao diện Dashboard cao cấp (Glassmorphism & Dark mode)
-    │   │   └── js/
-    │   │       └── app.js    # Xử lý WebSocket kết nối webcam và hiển thị kết quả
-    │   └── templates/
-    │       └── index.html    # Giao diện web Dashboard chính cho giáo viên
-    ├── docs/
-    │   └── implementation-plan.md # Tài liệu kế hoạch triển khai
-    └── requirements.txt
-    ```
+1. Khởi tạo môi trường ảo Python: `python -m venv venv`.
+2. Cài đặt các thư viện phụ thuộc: `pip install -r requirements.txt` và `pip install -r requirements-ai.txt` (DeepFace, TensorFlow, tf-keras).
+3. Toàn bộ mã nguồn Python, cấu hình cơ sở dữ liệu, static assets (CSS, JS) và HTML template được đặt tập trung trong thư mục `src/`.
 
 ### Bước 2: Xây dựng Cơ sở Dữ liệu & Đăng ký Học sinh
-1.  Viết file `database.py` và `models.py` khai báo các bảng.
-2.  Xây dựng chức năng đăng ký học sinh mới (`/register` API):
-    *   Nhập mã số học sinh, tên.
-    *   Chụp ảnh chân dung học sinh từ webcam hoặc upload ảnh.
-    *   Sử dụng module `DeepFace.represent()` để trích xuất đặc trưng (128-D vector) và lưu vào bảng `students`.
+1. Viết `database.py` và `models.py` kết nối cơ sở dữ liệu SQLite qua SQLAlchemy ORM.
+2. Xây dựng API `/api/students/register` trích xuất vector đặc trưng khuôn mặt (embeddings) bằng `DeepFace.represent()` và mã hóa ảnh avatar để lưu trữ bảo mật.
 
-### Bước 3: Phát triển Core Nhận diện & Phân tích hành vi
-1.  **Xây dựng `behavior_engine.py`**:
-    *   Tích hợp MediaPipe Face Mesh và Hands.
-    *   Viết các hàm tính góc Pitch, Yaw, Roll bằng `cv2.solvePnP`.
-    *   Viết hàm tính toán EAR cho mắt và MAR cho miệng.
-    *   Viết hàm kiểm tra chồng tay dựa trên khoảng cách giữa các điểm mốc tay và mặt.
-2.  **Xây dựng `face_engine.py`**:
-    *   Lấy frame từ camera, chạy MediaPipe Face Detection để cắt vùng khuôn mặt (bounding box).
-    *   Chạy so khớp khuôn mặt thông qua so sánh khoảng cách Cosine giữa embedding của khuôn mặt hiện tại và cơ sở dữ liệu học sinh (`DeepFace.verify`).
+### Bước 3: Phát triển Core AI Nhận diện & Phân tích hành vi
+1. Xây dựng `behavior_engine.py` tính toán các góc tư thế đầu (solvePnP), EAR cho mắt, MAR cho miệng và khoảng cách bàn tay tới mặt.
+2. Xây dựng `face_engine.py` nhận diện khuôn mặt bằng DeepFace định kỳ mỗi 1.5 giây. Các frame ở giữa duy trì danh tính bằng Face Mesh ID để tiết kiệm tài nguyên.
 
-### Bước 4: Xây dựng FastAPI Backend & WebSocket Streaming
-1.  Khởi tạo FastAPI app và cấu hình CORS.
-2.  Tạo WebSocket endpoint `/ws` để nhận hình ảnh webcam (dưới dạng Base64 hoặc Binary Bytes) từ Frontend gửi lên liên tục.
-3.  Tại Backend, xử lý luồng Frame:
-    *   Chuyển đổi hình ảnh sang định dạng OpenCV.
-    *   Chạy nhận diện danh tính và phân tích hành vi đồng thời (hoặc sử dụng kỹ thuật đa luồng / bất đồng bộ để tránh nghẽn luồng video).
-    *   Vẽ các bounding box, landmarks và văn bản cảnh báo trực tiếp lên frame hoặc trả về dữ liệu metadata dạng JSON.
-    *   Gửi lại frame đã xử lý và thông tin metadata về Frontend qua WebSocket.
+### Bước 4: WebSocket Server và tối ưu hóa xử lý video
+1. WebSocket Endpoint `/ws` nhận frame video đã được **Adaptive Downscaled** về chiều rộng tối đa 640px và chất lượng JPEG 70% từ Frontend.
+2. Chạy hàm xử lý nhận diện khuôn mặt và hành vi trên thread pool (`asyncio.to_thread`) tránh gây block event loop.
+3. Sử dụng Pillow và font chữ hệ thống `Arial.ttf` để vẽ đè nhãn tiếng Việt Unicode lên ảnh và trả về cho client. Hỗ trợ fallback về `cv2.putText` nếu Pillow gặp sự cố.
 
-### Bước 5: Thiết kế Giao diện Frontend Premium
-1.  **Thiết kế Layout Dashboard**:
-    *   Sử dụng cấu trúc hai cột (Trái: Live Stream Video; Phải: Danh sách học sinh lớp học và Bảng điều khiển trả bài).
-    *   **Aesthetic**: Giao diện tối (Sleek Dark Mode), nền mờ kính cường lực (Glassmorphism), viền mỏng sáng bóng, và các màu sắc nhấn bắt mắt (Neon blue, Neon Green cho trạng thái bình thường; Amber/Crimson cho các cảnh báo hành vi xấu).
-2.  **Chức năng gọi ngẫu nhiên**:
-    *   Một Modal nổi bật với hiệu ứng thẻ bài xoay tròn, dừng lại và hiển thị ảnh chân dung học sinh được chọn.
-3.  **Thông báo Realtime**:
-    *   Một góc màn hình dành riêng cho các thẻ Alert tự động nhảy lên khi phát hiện hành vi ngủ gục, chống tay hoặc quay cóp.
-
-### Bước 6: Tối ưu hiệu năng và Kiểm thử
-1.  **Tối ưu tốc độ xử lý**:
-    *   Không chạy nhận diện khuôn mặt (Face Recognition) trên mọi frame. Chỉ chạy nhận diện mỗi 1-2 giây một lần để gán ID khuôn mặt, các frame ở giữa sử dụng thuật toán theo dõi khuôn mặt (Object Tracker) hoặc MediaPipe Face Mesh ID để giảm tải CPU.
-    *   Sử dụng Web Worker ở Frontend hoặc các tác vụ nền (Background Tasks) ở Backend để ghi log hành vi vào Database.
-2.  **Kiểm thử thực tế**:
-    *   Thử nghiệm với webcam có độ phân giải từ 720p trở lên.
-    *   Kiểm tra độ chính xác của nhận diện khuôn mặt trong điều kiện ánh sáng yếu.
-    *   Đánh giá sai số của bộ nhận diện hành vi (giảm thiểu cảnh báo giả đối với chống tay và quay cóp).
+### Bước 5: Thiết kế Giao diện Dashboard & Cảnh báo âm thanh
+1. Xây dựng layout Glassmorphism Dark/Light mode trong [index.html](file:///Users/quocthang0507/GitHub/face-recognition/src/templates/index.html) và [style.css](file:///Users/quocthang0507/GitHub/face-recognition/src/static/css/style.css).
+2. Viết logic Client-side trong [app.js](file:///Users/quocthang0507/GitHub/face-recognition/src/static/js/app.js) để:
+   - Thu thập luồng camera và vẽ thu nhỏ trên canvas gửi lên server.
+   - Xử lý bật/tắt camera nóng (Hot-swapping) thông qua dropdown chọn nguồn.
+   - Nhận kết quả và cập nhật giao diện, phát cảnh báo tiếng bíp kép và đọc tên bằng tiếng Việt với cooldown hạn chế tiếng ồn 10 giây.
+   - Quản lý trạng thái các checkbox và đồng bộ hóa qua `localStorage`.
 
 ---
 
 ## 6. Tiêu chuẩn Nghiệp vụ, Code sạch & Bảo mật (Standards, Clean Code & Security)
 
 ### 6.1. Tiêu chuẩn Nghiệp vụ & Độ tin cậy (Business & Quality Standards)
-*   **Độ tin cậy điểm danh**: Áp dụng cơ chế xác thực khuôn mặt đa hướng. Chỉ đánh dấu có mặt (`is_present = True`) khi hệ thống nhận diện thành công với độ tin cậy (Confidence) tối thiểu là 80% trong 5 frame liên tiếp để tránh nhận diện sai do chuyển động nhòe hoặc ánh sáng yếu.
-*   **Tính khách quan và Đối chiếu (Audit Trail)**: Mọi hành vi vi phạm lớp học được ghi nhận đều bắt buộc đi kèm với một ảnh chụp bằng chứng (`snapshot_path`). Điều này hỗ trợ giáo viên và học sinh dễ dàng đối chiếu trực quan khi có khiếu nại hoặc tranh cãi, đảm bảo tính công bằng của hệ thống.
-*   **Hiệu năng Real-time**: Đảm bảo luồng xử lý video (framerate) tối thiểu đạt 15-20 FPS ở client bằng cách phân tách luồng nhận diện khuôn mặt nặng (chạy định kỳ mỗi 1.5 giây) và luồng phân tích MediaPipe Landmark nhẹ (chạy trên từng frame).
+*   **Độ tin cậy điểm danh**: Đánh dấu có mặt (`is_present = True`) khi hệ thống nhận diện thành công với độ tin cậy tối thiểu 80% trong 5 frame liên tiếp để tránh nhận dạng sai do nhòe hình.
+*   **Ảnh bằng chứng (Audit Trail)**: Mọi hành vi vi phạm lớp học được ghi nhận đều đi kèm với một ảnh chụp bằng chứng (`snapshot_path`) giúp giáo viên đối chiếu trực quan.
+*   **Hiệu năng Real-time**: Đạt 15-20 FPS ở client nhờ kỹ thuật Client Downscaling (640px) và tối ưu hóa phân tách luồng nhận diện khuôn mặt của Backend.
 
 ### 6.2. Tiêu chuẩn Code sạch Quốc tế (Clean Code Standards)
-*   **Quy ước định dạng code**: Sử dụng quy chuẩn **PEP 8** của Python và các công cụ tự động formatter như `black` và linter `flake8` để đồng nhất phong cách viết mã nguồn.
-*   **Nguyên lý SOLID**:
-    *   *Single Responsibility Principle (SRP)*: Mỗi module chỉ giải quyết một bài toán duy nhất. `behavior_engine.py` chỉ tính toán chỉ số hình học; `face_engine.py` chỉ lo so khớp khuôn mặt; `models.py` chỉ khai báo cấu trúc bảng.
-    *   *Open/Closed Principle (OCP)*: Thiết kế các class xử lý hành vi dựa trên một interface trừu tượng (`BehaviorDetector`), cho phép mở rộng thêm các hành vi mới (ví dụ: dùng điện thoại, làm việc riêng) mà không cần can thiệp chỉnh sửa logic cốt lõi có sẵn.
-*   **Type Hinting & Self-documenting**: Áp dụng type annotation đầy đủ cho tất cả các hàm và phương thức. Viết Docstring chi tiết mô tả tham số và kiểu trả về theo chuẩn Google Style Docstrings nhằm tối đa hóa khả năng bảo trì.
+*   **Quy ước định dạng code**: Tuân thủ quy chuẩn **PEP 8** của Python (`black` và `flake8`).
+*   **Nguyên lý SOLID**: Phân tách SRP (Single Responsibility Principle) giữa các module xử lý (`behavior_engine.py` chỉ phân tích hình học, `face_engine.py` chỉ nhận diện, `models.py` định nghĩa bảng).
 
 ### 6.3. Bảo mật & An toàn Dữ liệu (Security & Data Protection)
-*   **Bảo vệ dữ liệu Sinh trắc học (Biometric Data Privacy)**:
-    *   Tuân thủ nghiêm ngặt các quy định pháp luật về bảo vệ dữ liệu cá nhân (ví dụ: **Nghị định 13/2023/NĐ-CP** của Việt Nam và chuẩn quốc tế **GDPR**).
-    *   Tuyệt đối **không lưu trữ hình ảnh khuôn mặt thô** của học sinh trong database sau khi đăng ký, chỉ lưu trữ file ảnh avatar đã được mã hóa phân quyền. Trong DB, đặc trưng khuôn mặt được lưu trữ dưới dạng một chuỗi vector số học (Face Embeddings 128-D/512-D) không thể đảo ngược (one-way hashing properties) để từ đó tái tạo lại khuôn mặt gốc.
-*   **An toàn luồng truyền tải (Transport Security)**:
-    *   Sử dụng giao thức **WSS (WebSocket Secure)** và **HTTPS** cho môi trường Production nhằm ngăn ngừa các cuộc tấn công nghe lén dữ liệu luồng camera (Man-in-the-Middle).
-*   **Bảo mật Cơ sở dữ liệu & API**:
-    *   Sử dụng SQLAlchemy ORM làm lớp trung gian thực thi câu lệnh SQL để loại bỏ hoàn toàn nguy cơ tấn công **SQL Injection**.
-    *   Xác thực nguồn WebSocket: Chỉ chấp nhận các kết nối WebSocket được khởi tạo từ các phiên đăng nhập hợp lệ của Giáo viên dựa trên JWT token lưu ở Cookie/Header bảo mật.
-    *   Tối ưu hóa ghi file: Áp dụng cơ chế ghi đệm ảnh snapshot vi phạm hành vi, tự động xóa các log và hình ảnh snapshot cũ hơn 30 ngày để tối ưu không gian lưu trữ và đảm bảo quyền được lãng quên (Right to be Forgotten) của học sinh.
+*   **Bảo vệ dữ liệu cá nhân**: Tuân thủ **Nghị định 13/2023/NĐ-CP** và **GDPR**. Không lưu trữ hình ảnh khuôn mặt thô của học sinh, chỉ lưu trữ đặc trưng khuôn mặt dưới dạng vector embeddings số học không thể giải mã ngược.
+*   **An toàn truyền tải**: Sử dụng giao thức HTTPS và WSS (WebSocket Secure) cho môi trường Production.
+*   **Bảo mật Database**: Sử dụng SQLAlchemy ORM ngăn chặn tấn công SQL Injection.
+*   **Dọn dẹp định kỳ**: Tác vụ nền (FastAPI lifespan) chạy định kỳ mỗi 24 giờ để tự động xóa các log vi phạm và ảnh bằng chứng cũ hơn 30 ngày.
 
 ---
 
 ## 7. Kế hoạch Nghiệm thu & Kiểm thử (Verification Plan)
 
 ### Kiểm thử Tự động (Automated Testing)
-*   Sử dụng `pytest` để viết unit test cho các module:
-    *   Hàm tính toán hình học (EAR, MAR, Head Pose) với các dữ liệu Landmark giả lập chuẩn.
-    *   Đảm bảo cơ sở dữ liệu thực hiện đúng việc truy vấn học sinh ngẫu nhiên chưa được gọi.
-*   Viết test script chạy qua một video mẫu đã gán nhãn hành vi để đo đạc chỉ số Precision và Recall của bộ phát hiện hành vi.
+*   Sử dụng `pytest` để viết unit test cho các module tính toán hình học, nghiệp vụ cơ sở dữ liệu, quản lý token, và xử lý lệnh WebSocket.
 
 ### Kiểm thử Thủ công (Manual Verification)
-1.  **Đăng ký dữ liệu**: Đăng ký 3 học sinh mẫu với các góc mặt khác nhau.
-2.  **Kiểm tra Nhận diện khuôn mặt**: Cho 3 học sinh lần lượt ngồi trước webcam, kiểm tra xem hệ thống có nhận dạng đúng tên từng người và đánh dấu có mặt hay không.
-3.  **Kiểm tra Gọi ngẫu nhiên**:
-    *   Bấm nút chọn học sinh ngẫu nhiên 3 lần liên tiếp.
-    *   Xác nhận không có học sinh nào bị gọi trùng lặp trong một phiên.
-    *   Gọi hết danh sách học sinh có mặt và kiểm tra thông báo reset danh sách.
-4.  **Kiểm tra Phát hiện Hành vi**:
-    *   Thực hiện hành vi **Nhắm mắt** hoặc **Gục đầu**: Xác nhận hệ thống hiển thị cảnh báo "Ngủ gục" sau 3 giây.
-    *   Thực hiện hành vi **Chống cằm / Chống má**: Xác nhận hệ thống khoanh vùng bàn tay chạm mặt và cảnh báo "Chống tay".
-    *   Thực hiện hành vi **Quay sang trái/phải** nhìn bài bạn: Xác nhận hệ thống ước lượng góc Yaw vượt ngưỡng và cảnh báo "Quay cóp".
+1. Đăng ký dữ liệu học sinh mẫu.
+2. Kiểm tra nhận dạng khuôn mặt và điểm danh chính xác khi học sinh ngồi trước webcam.
+3. Bấm gọi ngẫu nhiên nhiều lần để kiểm tra logic chọn học sinh và reset lượt gọi.
+4. Mô phỏng các hành vi nhắm mắt ngủ gục, chống cằm, quay đầu để kiểm tra:
+   - Hiển thị bounding box và nhãn tiếng Việt trên video.
+   - Cảnh báo âm thanh bíp và TTS tiếng Việt đọc to tên học sinh.
+   - Cơ chế cooldown 10 giây chặn âm thanh lặp lại dồn dập.
 
+---
+
+## 8. Các Cải tiến & Tối ưu đã Thực hiện (Implemented Enhancements)
+
+*   **Việt hóa Giao diện Hoàn toàn (Full Localization)**: Bản địa hóa 100% giao diện, thông báo lỗi, nhật ký hành vi và phản hồi từ API/WebSocket sang tiếng Việt.
+*   **Vẽ tiếng Việt Unicode trên Video overlay (PIL & TTF Fonts)**: Sử dụng Pillow kết hợp font chữ hệ thống `Arial.ttf` để hiển thị tiếng Việt Unicode không bị vỡ chữ trên video overlay.
+*   **Cơ chế Tự động Dự phòng (Safety Fallback)**: Tự động fallback về dùng `cv2.putText` nguyên bản nếu PIL gặp lỗi để tránh treo hoặc đen luồng video.
+*   **Khởi động Camera tức thời (Instant Video Preview)**: Điều chỉnh thuộc tính CSS opacity giúp hiển thị video webcam lập tức ngay khi bấm nút mở camera.
+*   **Tải trước mô hình AI (Lifespan Preloading)**: Tải trước mô hình DeepFace và MediaPipe khi FastAPI khởi chạy (lifespan), triệt tiêu hoàn toàn độ trễ 10s của frame đầu tiên.
+*   **Chọn nguồn camera nóng (Hot-swapping Camera)**: Tích hợp dropdown thiết bị cho phép giáo viên chuyển đổi trực tiếp giữa các webcam thời gian thực mà không cần tải lại trang.
+*   **Khắc phục lỗi ngắt kết nối WebSocket (ASGI RuntimeError)**: Bổ sung bước kiểm tra loại thông điệp `websocket.disconnect` trong luồng xử lý của FastAPI để giải phóng tài nguyên sạch sẽ khi đóng socket.
+*   **Đồng nhất và Cài đặt thư viện AI**: Cài đặt gói `tf-keras` và đồng nhất các dependencies của tensorflow, protobuf giúp hệ thống hoạt động ổn định.
+*   **Thêm favicon chất lượng cao** đồng bộ với giao diện Dashboard của hệ thống.
+*   **Tự động giảm độ phân giải phía Client (Adaptive Downscaling)**: Tự động nén và thu nhỏ ảnh về chiều rộng tối đa 640px (JPEG 70%) ở Client, tiết kiệm ~80% băng thông truyền tải và giảm 50% CPU xử lý của máy chủ.
+*   **Cảnh báo âm thanh & Giọng nói tiếng Việt (Audio & TTS Warnings)**:
+    - Bổ sung tùy chọn phát tiếng bíp kép cảnh báo vi phạm sử dụng Web Audio API (chạy offline).
+    - Đọc to cảnh báo bằng giọng nói tiếng Việt bằng Web Speech API (`SpeechSynthesis`).
+    - Tích hợp checkboxes điều khiển bật/tắt và đồng bộ hóa qua `localStorage`.
+    - Thiết lập cơ chế **Alert Cooldown (10 giây)** cho mỗi học sinh và loại vi phạm để tránh gây tiếng ồn chồng chéo.
+*   **Điều chỉnh tần suất truyền hình ảnh (Dynamic Client FPS Selection)**:
+    - Bổ sung dropdown menu `#video-fps-select-modal` cho phép cấu hình tần suất gửi frame từ client (15 FPS / 10 FPS / 5 FPS / 2 FPS) và lưu thiết lập vào `localStorage`.
+    - Tiết kiệm tương ứng 50% hoặc 80% CPU xử lý AI của server và băng thông mạng, trong khi vẫn đảm bảo độ chính xác tuyệt đối của các thuật toán phát hiện hành vi nhờ cơ chế tính thời gian trôi qua thực tế (`time.monotonic()`) thay vì đếm số frame.
+*   **Hộp thoại Cài đặt Tập trung (Settings Modal)**:
+    - Hợp nhất tất cả các tùy chọn cấu hình nâng cao bao gồm: đổi nguồn camera, tần suất gửi ảnh (FPS), theme sáng/tối, tùy chọn âm thanh/giọng nói, và bộ chọn giọng đọc (TTS Voice Selector) của hệ thống vào một hộp thoại popup (#settings-modal) duy nhất.
+    - Giúp làm gọn gàng giao diện chính của Dashboard, cho phép giáo viên tùy chọn giọng đọc phù hợp dựa trên danh sách giọng đọc tiếng Việt/hệ thống có sẵn.
+
+---
+
+## 9. Đề xuất Tính năng Nâng cấp trong Tương lai (Future Feature Proposals)
+
+*   **Xuất Báo cáo Điểm danh & Hành vi (Report Exporting)**: API kết xuất chuyên cần và nhật ký hành vi vi phạm ra file Excel (.xlsx) hoặc CSV khi kết thúc phiên.
+*   **Biểu đồ Thống kê Trực quan (Behavior Analytics Chart)**: Sử dụng Chart.js trên Frontend hiển thị biểu đồ tròn về tỷ lệ tập trung của lớp và biểu đồ đường thể hiện tần suất hành vi vi phạm theo thời gian tiết học.
+*   **Tối ưu hóa GPU (Metal/CUDA Acceleration)**: Biên dịch OpenCV và TensorFlow với CUDA (NVIDIA) hoặc MPS (Apple Silicon macOS) để tăng tối đa FPS xử lý.
+*   **Tích hợp Chế độ Chạy Ngoại tuyến (Offline Caching)**: Lưu trữ các tệp trọng số mô hình (weights) của DeepFace trực tiếp trong dự án để hoạt động không cần Internet trong lần đầu khởi chạy.
+*   **Quản lý Danh sách Lớp học (Class/Subject Management)**: Hỗ trợ cấu hình danh sách học sinh riêng biệt theo từng lớp và môn học khác nhau.

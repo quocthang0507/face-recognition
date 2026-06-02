@@ -18,21 +18,26 @@ class DomainError(ValueError):
     """Raised when a requested business operation is not valid."""
 
 
-def serialize_embedding(embedding: Sequence[float]) -> str:
+def serialize_embedding(embedding: Sequence[float] | None) -> str:
     """Serialize a numeric embedding for storage."""
 
     if not embedding:
-        raise DomainError("Face embedding cannot be empty")
+        return "[]"
     return json.dumps([float(value) for value in embedding], separators=(",", ":"))
 
 
 def deserialize_embedding(raw_embedding: str) -> list[float]:
     """Load a numeric embedding from storage."""
 
-    values = json.loads(raw_embedding)
-    if not isinstance(values, list) or not values:
-        raise DomainError("Stored face embedding is invalid")
-    return [float(value) for value in values]
+    if not raw_embedding or raw_embedding == "[]":
+        return []
+    try:
+        values = json.loads(raw_embedding)
+        if not isinstance(values, list) or not values:
+            return []
+        return [float(value) for value in values]
+    except Exception:
+        return []
 
 
 class StudentService:
@@ -43,22 +48,22 @@ class StudentService:
         db: Session,
         student_code: str,
         fullname: str,
-        embedding: Sequence[float],
-        avatar_path: str,
+        embedding: Sequence[float] | None = None,
+        avatar_path: str | None = None,
     ) -> Student:
         """Register one student after validating unique identity fields."""
 
         normalized_code = student_code.strip()
         normalized_name = fullname.strip()
         if not normalized_code or len(normalized_code) > 20:
-            raise DomainError("Student code must contain 1-20 characters")
+            raise DomainError("Mã học sinh phải có từ 1-20 ký tự")
         if not normalized_name or len(normalized_name) > 100:
-            raise DomainError("Full name must contain 1-100 characters")
+            raise DomainError("Họ và tên phải có từ 1-100 ký tự")
         existing = db.scalar(
             select(Student).where(Student.student_code == normalized_code)
         )
         if existing:
-            raise DomainError("Student code already exists")
+            raise DomainError("Mã học sinh đã tồn tại")
         student = Student(
             student_code=normalized_code,
             fullname=normalized_name,
@@ -68,6 +73,22 @@ class StudentService:
         db.add(student)
         db.commit()
         db.refresh(student)
+
+        # Enroll in the currently active session if one exists
+        active_session = db.scalar(
+            select(ClassroomSession).where(ClassroomSession.status == "ACTIVE")
+        )
+        if active_session:
+            db.add(
+                SessionStudent(
+                    session_id=active_session.id,
+                    student_id=student.id,
+                    is_present=False,
+                    is_called=False,
+                )
+            )
+            db.commit()
+
         return student
 
     @staticmethod
@@ -85,26 +106,31 @@ class ClassroomService:
         """Start a lesson and initialize attendance state for all students."""
 
         active = ClassroomService.get_active_session(db)
-        if active:
-            raise DomainError("A classroom session is already active")
-        classroom_session = ClassroomSession(status="ACTIVE")
-        db.add(classroom_session)
+        if active is not None:
+            raise DomainError("Có phiên học đang hoạt động")
+        session = ClassroomSession(status="ACTIVE")
+        db.add(session)
         db.flush()
-        for student in db.scalars(select(Student)):
+
+        students = db.scalars(select(Student)).all()
+        for student in students:
             db.add(
-                SessionStudent(session_id=classroom_session.id, student_id=student.id)
+                SessionStudent(
+                    session_id=session.id,
+                    student_id=student.id,
+                    is_present=False,
+                    is_called=False,
+                )
             )
         db.commit()
-        return classroom_session
+        return session
 
     @staticmethod
     def get_active_session(db: Session) -> ClassroomSession | None:
-        """Return the currently active lesson, if any."""
+        """Return the current active lesson if any."""
 
         return db.scalar(
-            select(ClassroomSession)
-            .where(ClassroomSession.status == "ACTIVE")
-            .order_by(ClassroomSession.created_at.desc())
+            select(ClassroomSession).where(ClassroomSession.status == "ACTIVE")
         )
 
     @staticmethod
@@ -119,7 +145,7 @@ class ClassroomService:
 
     @staticmethod
     def mark_present(db: Session, session_id: int, student_id: int) -> None:
-        """Mark a recognized student as present in an active lesson."""
+        """Mark one student present in the active lesson."""
 
         ClassroomService._active_by_id(db, session_id)
         state = db.scalar(
@@ -141,9 +167,10 @@ class ClassroomService:
         session_id: int,
         chooser: random.Random | None = None,
     ) -> SessionStudent:
-        """Pick one present student who has not yet been called."""
+        """Pick one present student who has not yet been called, falling back to any uncalled student."""
 
         ClassroomService._active_by_id(db, session_id)
+        # Try to find present uncalled students first
         candidates = list(
             db.scalars(
                 select(SessionStudent)
@@ -155,8 +182,20 @@ class ClassroomService:
                 )
             )
         )
+        # Fallback to all uncalled students in the session if no present uncalled students
         if not candidates:
-            raise DomainError("No uncalled present students remain")
+            candidates = list(
+                db.scalars(
+                    select(SessionStudent)
+                    .options(joinedload(SessionStudent.student))
+                    .where(
+                        SessionStudent.session_id == session_id,
+                        SessionStudent.is_called.is_(False),
+                    )
+                )
+            )
+        if not candidates:
+            raise DomainError("Không còn học sinh nào chưa được gọi")
         selected = (chooser or random).choice(candidates)
         selected.is_called = True
         selected.called_at = utc_now()
@@ -193,7 +232,7 @@ class ClassroomService:
     def _active_by_id(db: Session, session_id: int) -> ClassroomSession:
         classroom_session = db.get(ClassroomSession, session_id)
         if classroom_session is None or classroom_session.status != "ACTIVE":
-            raise DomainError("Active classroom session was not found")
+            raise DomainError("Không tìm thấy phiên học đang hoạt động")
         return classroom_session
 
 

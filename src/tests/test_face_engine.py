@@ -54,7 +54,7 @@ def test_registration_rejects_image_without_detected_face() -> None:
 
     engine = FaceRecognitionEngine(locator=EmptyLocator())
 
-    with pytest.raises(ValueError, match="No face"):
+    with pytest.raises(ValueError, match="Không phát hiện"):
         engine.registration_embedding(frame=None)
 
 

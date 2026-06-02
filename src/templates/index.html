@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Smart Classroom</title>
+    <title>Lớp học Thông minh</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png" />
     <script>
       document.documentElement.dataset.theme = localStorage.getItem("smart-classroom-theme")
         || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
@@ -16,12 +17,12 @@
     <main class="shell">
       <header class="topbar glass">
         <div>
-          <p class="eyebrow">SMART CLASSROOM</p>
-          <h1>Classroom Monitor</h1>
+          <p class="eyebrow">LỚP HỌC THÔNG MINH</p>
+          <h1>Giám sát Lớp học</h1>
         </div>
         <div class="topbar-actions">
-          <span id="socket-status" class="status-pill offline">Camera offline</span>
-          <button id="theme-toggle-button" class="button ghost">Giao diện sáng</button>
+          <span id="socket-status" class="status-pill offline">Camera ngoại tuyến</span>
+          <button id="settings-button" class="button ghost">Cài đặt</button>
           <button id="logout-button" class="button ghost">Đăng xuất</button>
         </div>
       </header>
@@ -49,7 +50,7 @@
         <article class="camera-card glass">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">LIVE ANALYSIS</p>
+              <p class="eyebrow">PHÂN TÍCH TRỰC TIẾP</p>
               <h2>Camera lớp học</h2>
             </div>
             <div class="camera-actions">
@@ -71,7 +72,7 @@
 
         <aside class="side-column">
           <article class="behavior-card glass">
-            <p class="eyebrow">BEHAVIOR CHECKS</p>
+            <p class="eyebrow">KIỂM TRA HÀNH VI</p>
             <h2>Phân tích hành vi</h2>
             <p>Bật hoặc tắt từng cảnh báo độc lập với phiên điểm danh.</p>
             <div class="behavior-options">
@@ -80,10 +81,11 @@
               <button type="button" class="behavior-toggle active" data-behavior="CHEATING" aria-pressed="true">Quay cóp</button>
               <button type="button" class="behavior-toggle active" data-behavior="TALKING" aria-pressed="true">Nói chuyện</button>
             </div>
+
           </article>
 
           <article class="picker-card glass">
-            <p class="eyebrow">RANDOM PICKER</p>
+            <p class="eyebrow">GỌI NGẪU NHIÊN</p>
             <h2>Gọi trả bài</h2>
             <p>Bắt đầu phiên khi cần điểm danh, lưu audit log và gọi học sinh trả bài.</p>
             <div class="session-actions">
@@ -97,7 +99,7 @@
           <article class="register-card glass">
             <div class="section-heading compact">
               <div>
-                <p class="eyebrow">ENROLLMENT</p>
+                <p class="eyebrow">ĐĂNG KÝ HỌC SINH</p>
                 <h2>Đăng ký học sinh</h2>
               </div>
               <button id="toggle-register-button" class="icon-button">+</button>
@@ -119,7 +121,7 @@
         <article class="glass table-card">
           <div class="section-heading compact">
             <div>
-              <p class="eyebrow">ATTENDANCE</p>
+              <p class="eyebrow">ĐIỂM DANH</p>
               <h2>Danh sách lớp</h2>
             </div>
           </div>
@@ -136,7 +138,7 @@
         <article class="glass alert-card">
           <div class="section-heading compact">
             <div>
-              <p class="eyebrow">AUDIT TRAIL</p>
+              <p class="eyebrow">NHẬT KÝ HÀNH VI</p>
               <h2>Cảnh báo mới nhất</h2>
             </div>
             <button id="clear-alerts-button" class="button danger compact-button" disabled>Xóa lịch sử</button>
@@ -144,11 +146,25 @@
           <div id="alert-list" class="alert-list"></div>
         </article>
       </section>
+
     </main>
+
+    <footer class="glass" style="position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); width: min(1500px, calc(100% - 32px)); padding: 16px 20px; text-align: center; color: var(--muted); font-size: 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; z-index: 5;">
+      <div>
+        <span>© 2026 Smart Classroom. Hệ thống quản lý và giám sát lớp học thông minh.</span>
+      </div>
+      <div style="display: flex; gap: 16px;">
+        <span style="color: var(--green); display: flex; align-items: center; gap: 6px;">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block;"></span>
+          Hệ thống đang hoạt động ổn định
+        </span>
+        <span>Phiên bản 1.2.0</span>
+      </div>
+    </footer>
 
     <div id="login-modal" class="modal visible">
       <form id="login-form" class="modal-panel glass">
-        <p class="eyebrow">TEACHER ACCESS</p>
+        <p class="eyebrow">TRUY CẬP GIÁO VIÊN</p>
         <h2>Đăng nhập Dashboard</h2>
         <p>Nhập mật khẩu giáo viên để mở API và luồng camera.</p>
         <input name="password" type="password" placeholder="Mật khẩu giáo viên" required />
@@ -159,7 +175,7 @@
 
     <div id="picker-modal" class="modal">
       <div class="modal-panel picker-result glass">
-        <p class="eyebrow">STUDENT SELECTED</p>
+        <p class="eyebrow">HỌC SINH ĐƯỢC CHỌN</p>
         <div class="avatar-ring">
           <img id="picked-avatar" alt="" />
           <span id="picked-initials">?</span>
@@ -167,6 +183,61 @@
         <h2 id="picked-name">Đang chọn...</h2>
         <p id="picked-code"></p>
         <button id="close-picker-button" class="button primary full">Đóng</button>
+      </div>
+    </div>
+
+    <div id="settings-modal" class="modal">
+      <div class="modal-panel settings-panel glass" style="width: min(450px, 100%);">
+        <p class="eyebrow">CẤU HÌNH HỆ THỐNG</p>
+        <h2>Cài đặt</h2>
+        <p>Điều chỉnh nguồn camera, tốc độ truyền và cảnh báo âm thanh.</p>
+        
+        <div class="settings-group" style="display: grid; gap: 15px; text-align: left; margin: 20px 0;">
+          <div class="setting-item" style="display: grid; gap: 6px;">
+            <label style="font-size: 13px; color: var(--muted); font-weight: 700;">Nguồn Camera:</label>
+            <select id="video-source-select-modal" class="select-field" style="width: 100%;"></select>
+          </div>
+
+          <div class="setting-item" style="display: grid; gap: 6px;">
+            <label style="font-size: 13px; color: var(--muted); font-weight: 700;">Tần suất gửi khung hình (FPS):</label>
+            <select id="video-fps-select-modal" class="select-field" style="width: 100%;">
+              <option value="67">Siêu mượt (15 FPS)</option>
+              <option value="100">Mượt (10 FPS)</option>
+              <option value="200">Tiêu chuẩn (5 FPS)</option>
+              <option value="500">Tiết kiệm (2 FPS)</option>
+            </select>
+          </div>
+
+          <div class="setting-item" style="display: grid; gap: 6px;">
+            <label style="font-size: 13px; color: var(--muted); font-weight: 700;">Giao diện hiển thị:</label>
+            <select id="theme-select-modal" class="select-field" style="width: 100%;">
+              <option value="dark">Giao diện tối (Dark Mode)</option>
+              <option value="light">Giao diện sáng (Light Mode)</option>
+            </select>
+          </div>
+
+          <div class="setting-item" style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px; padding-top: 15px; border-top: 1px solid var(--line);">
+            <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; user-select: none;">
+              <input type="checkbox" id="audio-alert-checkbox-modal" checked style="width: 16px; height: 16px; padding: 0; margin: 0; cursor: pointer;" />
+              <span>Phát âm thanh cảnh báo (Bíp)</span>
+            </label>
+            
+            <fieldset class="settings-groupbox">
+              <legend>
+                <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; user-select: none;">
+                  <input type="checkbox" id="tts-alert-checkbox-modal" checked style="width: 16px; height: 16px; padding: 0; margin: 0; cursor: pointer;" />
+                  <span>Đọc tên học sinh vi phạm (TTS)</span>
+                </label>
+              </legend>
+              <div id="tts-voice-container" style="display: grid; gap: 6px; text-align: left;">
+                <label style="font-size: 11px; color: var(--muted); font-weight: 700;">Giọng đọc:</label>
+                <select id="tts-voice-select-modal" class="select-field" style="width: 100%; font-size: 12px; padding: 6px 10px;"></select>
+              </div>
+            </fieldset>
+          </div>
+        </div>
+        
+        <button id="close-settings-button" class="button primary full">Lưu & Đóng</button>
       </div>
     </div>
 

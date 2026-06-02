@@ -31,5 +31,5 @@ def test_websocket_behavior_config_requires_string_list() -> None:
         )
     }
 
-    with pytest.raises(ValueError, match="list of strings"):
+    with pytest.raises(ValueError, match="danh sách chuỗi"):
         _websocket_behavior_config(message)
