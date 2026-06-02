@@ -5,6 +5,7 @@ import math
 import pytest
 
 from src.behavior_engine import (
+    BehaviorEngine,
     CheatingDetector,
     DetectorContext,
     HandOnFaceDetector,
@@ -12,6 +13,7 @@ from src.behavior_engine import (
     eye_aspect_ratio,
     minimum_relative_hand_face_distance,
     mouth_aspect_ratio,
+    normalize_behavior_types,
 )
 
 
@@ -67,3 +69,35 @@ def test_cheating_detects_sideways_yaw() -> None:
 
     assert not detector.evaluate(context(yaw=-31, now=0))
     assert detector.evaluate(context(yaw=-31, now=2))
+
+
+def test_disabling_behavior_resets_pending_detector_timer() -> None:
+    detector = SleepingDetector()
+    engine = BehaviorEngine.__new__(BehaviorEngine)
+    engine.detectors = [detector]
+    engine._enabled_behaviors = frozenset({"SLEEPING"})
+
+    assert not detector.evaluate(context(ear=0.1, pitch=15, now=0))
+    assert detector.states
+
+    engine.set_enabled_behaviors([])
+
+    assert not detector.states
+    assert engine.enabled_behaviors == frozenset()
+
+
+def test_behavior_configuration_rejects_unknown_type() -> None:
+    with pytest.raises(ValueError, match="Unknown behavior types"):
+        normalize_behavior_types(["SLEEPING", "PHONE_USAGE"])
+
+
+def test_disabled_behavior_is_not_evaluated() -> None:
+    detector = SleepingDetector()
+    engine = BehaviorEngine.__new__(BehaviorEngine)
+    engine.detectors = [detector]
+    engine._enabled_behaviors = frozenset()
+
+    alerts = engine.evaluate_detectors(context(ear=0.1, pitch=15, now=0))
+
+    assert alerts == ()
+    assert not detector.states

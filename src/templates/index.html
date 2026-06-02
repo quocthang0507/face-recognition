@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Smart Classroom</title>
+    <script>
+      document.documentElement.dataset.theme = localStorage.getItem("smart-classroom-theme")
+        || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    </script>
     <link rel="stylesheet" href="/static/css/style.css" />
   </head>
   <body>
@@ -17,6 +21,7 @@
         </div>
         <div class="topbar-actions">
           <span id="socket-status" class="status-pill offline">Camera offline</span>
+          <button id="theme-toggle-button" class="button ghost">Giao diện sáng</button>
           <button id="logout-button" class="button ghost">Đăng xuất</button>
         </div>
       </header>
@@ -49,8 +54,7 @@
             </div>
             <div class="camera-actions">
               <button id="start-camera-button" class="button secondary">Bật camera</button>
-              <button id="start-session-button" class="button primary">Bắt đầu phiên</button>
-              <button id="finish-session-button" class="button ghost" disabled>Kết thúc</button>
+              <button id="stop-camera-button" class="button ghost" disabled>Tắt camera</button>
             </div>
           </div>
           <div class="video-stage">
@@ -66,10 +70,26 @@
         </article>
 
         <aside class="side-column">
+          <article class="behavior-card glass">
+            <p class="eyebrow">BEHAVIOR CHECKS</p>
+            <h2>Phân tích hành vi</h2>
+            <p>Bật hoặc tắt từng cảnh báo độc lập với phiên điểm danh.</p>
+            <div class="behavior-options">
+              <button type="button" class="behavior-toggle active" data-behavior="SLEEPING" aria-pressed="true">Ngủ gục</button>
+              <button type="button" class="behavior-toggle active" data-behavior="HAND_ON_FACE" aria-pressed="true">Chống tay</button>
+              <button type="button" class="behavior-toggle active" data-behavior="CHEATING" aria-pressed="true">Quay cóp</button>
+              <button type="button" class="behavior-toggle active" data-behavior="TALKING" aria-pressed="true">Nói chuyện</button>
+            </div>
+          </article>
+
           <article class="picker-card glass">
             <p class="eyebrow">RANDOM PICKER</p>
             <h2>Gọi trả bài</h2>
-            <p>Chỉ chọn học sinh đã được xác nhận có mặt và chưa được gọi trong vòng hiện tại.</p>
+            <p>Bắt đầu phiên khi cần điểm danh, lưu audit log và gọi học sinh trả bài.</p>
+            <div class="session-actions">
+              <button id="start-session-button" class="button secondary">Bắt đầu phiên</button>
+              <button id="finish-session-button" class="button ghost" disabled>Kết thúc</button>
+            </div>
             <button id="pick-button" class="button primary full" disabled>Gọi ngẫu nhiên</button>
             <button id="reset-called-button" class="button ghost full" disabled>Reset lượt gọi</button>
           </article>
@@ -119,6 +139,7 @@
               <p class="eyebrow">AUDIT TRAIL</p>
               <h2>Cảnh báo mới nhất</h2>
             </div>
+            <button id="clear-alerts-button" class="button danger compact-button" disabled>Xóa lịch sử</button>
           </div>
           <div id="alert-list" class="alert-list"></div>
         </article>

@@ -247,6 +247,21 @@ class BehaviorLogService:
         logs = list(
             db.scalars(select(BehaviorLog).where(BehaviorLog.timestamp < cutoff))
         )
+        return BehaviorLogService._delete_logs(db, storage, logs)
+
+    @staticmethod
+    def clear_all(db: Session, storage: PrivateStorage) -> int:
+        """Delete every behavior log and its evidence snapshot."""
+
+        logs = list(db.scalars(select(BehaviorLog)))
+        return BehaviorLogService._delete_logs(db, storage, logs)
+
+    @staticmethod
+    def _delete_logs(
+        db: Session, storage: PrivateStorage, logs: Sequence[BehaviorLog]
+    ) -> int:
+        """Delete selected behavior logs and any snapshots still on disk."""
+
         for log in logs:
             try:
                 storage.delete_snapshot(log.snapshot_path)

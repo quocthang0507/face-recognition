@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -67,7 +68,19 @@ async def lifespan(_: FastAPI):
 
     create_tables()
     await asyncio.to_thread(_cleanup_expired_logs)
-    yield
+    cleanup_task = asyncio.create_task(_retention_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+
+
+async def _retention_cleanup_loop() -> None:
+    """Prune expired audit snapshots once a day while the server is running."""
+
+    while True:
+        await asyncio.sleep(24 * 60 * 60)
+        await asyncio.to_thread(_cleanup_expired_logs)
 
 
 app = FastAPI(title="Smart Classroom", lifespan=lifespan)
@@ -163,6 +176,7 @@ def list_students(db: Annotated[Session, Depends(get_db)]) -> list[dict[str, obj
     return [_student_payload(student) for student in StudentService.list_all(db)]
 
 
+@app.post("/register", include_in_schema=False, dependencies=[Depends(require_teacher)])
 @app.post("/api/students/register", dependencies=[Depends(require_teacher)])
 async def register_student(
     student_code: Annotated[str, Form()],
@@ -288,6 +302,13 @@ def recent_behaviors(
     ]
 
 
+@app.delete("/api/behaviors", dependencies=[Depends(require_teacher)])
+def clear_behaviors(db: Annotated[Session, Depends(get_db)]) -> dict[str, int]:
+    """Delete the complete behavior audit trail and evidence snapshots."""
+
+    return {"deleted": BehaviorLogService.clear_all(db, storage)}
+
+
 @app.get("/api/snapshots/{name}", dependencies=[Depends(require_teacher)])
 def get_snapshot(name: str) -> Response:
     """Return one protected behavior evidence image."""
@@ -312,6 +333,16 @@ async def video_stream(websocket: WebSocket) -> None:
     try:
         while True:
             message = await websocket.receive()
+            behavior_config = _websocket_behavior_config(message)
+            if behavior_config is not None:
+                processor.set_enabled_behaviors(behavior_config)
+                await websocket.send_json(
+                    {
+                        "type": "behavior_config",
+                        "enabled_behaviors": sorted(processor.enabled_behaviors),
+                    }
+                )
+                continue
             raw_jpeg = _websocket_frame_bytes(message)
             with SessionLocal() as db:
                 result = await asyncio.to_thread(processor.process, raw_jpeg, db)
@@ -346,6 +377,26 @@ def _websocket_frame_bytes(message: dict[str, object]) -> bytes:
         except binascii.Error as exc:
             raise ValueError("Invalid base64 webcam frame") from exc
     raise ValueError("WebSocket frame must contain JPEG bytes")
+
+
+def _websocket_behavior_config(message: dict[str, object]) -> list[str] | None:
+    """Load an optional behavior-toggle command from a WebSocket text message."""
+
+    text = message.get("text")
+    if not isinstance(text, str) or not text.startswith("{"):
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid WebSocket JSON command") from exc
+    if not isinstance(payload, dict) or payload.get("type") != "behavior_config":
+        raise ValueError("Unsupported WebSocket command")
+    enabled_behaviors = payload.get("enabled_behaviors")
+    if not isinstance(enabled_behaviors, list) or not all(
+        isinstance(item, str) for item in enabled_behaviors
+    ):
+        raise ValueError("enabled_behaviors must be a list of strings")
+    return enabled_behaviors
 
 
 def _student_payload(student: Student) -> dict[str, object]:

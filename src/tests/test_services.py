@@ -7,7 +7,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from src.database import Base
-from src.services import ClassroomService, DomainError, StudentService
+from src.services import (
+    BehaviorLogService,
+    ClassroomService,
+    DomainError,
+    StudentService,
+)
 
 
 @pytest.fixture
@@ -59,3 +64,23 @@ def test_only_one_classroom_session_can_be_active(db: Session) -> None:
 
     with pytest.raises(DomainError):
         ClassroomService.start_session(db)
+
+
+def test_clear_behavior_logs_deletes_database_rows_and_snapshots(db: Session) -> None:
+    class RecordingStorage:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete_snapshot(self, name: str) -> None:
+            self.deleted.append(name)
+
+    classroom_session = ClassroomService.start_session(db)
+    BehaviorLogService.create(db, classroom_session.id, "SLEEPING", "first.jpg")
+    BehaviorLogService.create(db, classroom_session.id, "CHEATING", "second.jpg")
+    storage = RecordingStorage()
+
+    deleted = BehaviorLogService.clear_all(db, storage)
+
+    assert deleted == 2
+    assert storage.deleted == ["first.jpg", "second.jpg"]
+    assert BehaviorLogService.list_recent(db) == []

@@ -7,15 +7,17 @@ import time
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
-from .face_engine import BoundingBox
+from .tracking import BoundingBox, CentroidBoxTracker
 
 Point = tuple[float, float]
 LEFT_EYE = (33, 160, 158, 133, 153, 144)
 RIGHT_EYE = (362, 385, 387, 263, 373, 380)
 FACE_BOUNDARY = (10, 234, 93, 132, 152, 361, 323, 454)
 POSE_LANDMARKS = (1, 152, 33, 263, 61, 291)
+BEHAVIOR_TYPES = frozenset({"SLEEPING", "HAND_ON_FACE", "CHEATING", "TALKING"})
+HEAD_POSE_BEHAVIORS = frozenset({"SLEEPING", "CHEATING", "TALKING"})
 
 
 def euclidean_distance(left: Point, right: Point) -> float:
@@ -162,6 +164,11 @@ class BehaviorDetector(ABC):
             return True
         return False
 
+    def reset(self) -> None:
+        """Discard temporal state when this detector is disabled."""
+
+        self.states.clear()
+
     @abstractmethod
     def is_active(self, context: DetectorContext) -> bool:
         """Return whether measurements currently indicate this behavior."""
@@ -225,12 +232,20 @@ class TalkingDetector(BehaviorDetector):
         facing_peer = context.face_count > 1 and abs(context.yaw) > 12.0
         return facing_peer and len(transitions) >= 4
 
+    def reset(self) -> None:
+        """Discard mouth-transition history when talking checks are disabled."""
+
+        super().reset()
+        self._transitions.clear()
+        self._last_open.clear()
+
 
 @dataclass(frozen=True)
 class FaceBehavior:
     """Measurements and emitted alerts for a face in the current frame."""
 
     box: BoundingBox
+    track_id: int
     track_key: str
     ear: float
     mar: float
@@ -244,6 +259,7 @@ class FaceBehavior:
 
         return {
             "box": self.box.to_dict(),
+            "track_id": self.track_id,
             "track_key": self.track_key,
             "ear": round(self.ear, 3),
             "mar": round(self.mar, 3),
@@ -257,7 +273,11 @@ class FaceBehavior:
 class BehaviorEngine:
     """Extract MediaPipe landmarks and run each registered detector."""
 
-    def __init__(self, detectors: Sequence[BehaviorDetector] | None = None) -> None:
+    def __init__(
+        self,
+        detectors: Sequence[BehaviorDetector] | None = None,
+        enabled_behaviors: Iterable[str] | None = None,
+    ) -> None:
         self.detectors = list(
             detectors
             or (
@@ -267,8 +287,12 @@ class BehaviorEngine:
                 TalkingDetector(),
             )
         )
+        self._enabled_behaviors = normalize_behavior_types(
+            BEHAVIOR_TYPES if enabled_behaviors is None else enabled_behaviors
+        )
         self._face_mesh: Any | None = None
         self._hands: Any | None = None
+        self._tracker = CentroidBoxTracker()
         try:
             import mediapipe as mp
 
@@ -293,6 +317,32 @@ class BehaviorEngine:
 
         return self._face_mesh is not None and self._hands is not None
 
+    @property
+    def enabled_behaviors(self) -> frozenset[str]:
+        """Return the behavior checks currently enabled for this camera stream."""
+
+        return self._enabled_behaviors
+
+    def set_enabled_behaviors(self, behavior_types: Iterable[str]) -> None:
+        """Enable selected checks and reset state for checks that were disabled."""
+
+        enabled_behaviors = normalize_behavior_types(behavior_types)
+        disabled_behaviors = self._enabled_behaviors - enabled_behaviors
+        for detector in self.detectors:
+            if detector.behavior_type in disabled_behaviors:
+                detector.reset()
+        self._enabled_behaviors = enabled_behaviors
+
+    def evaluate_detectors(self, context: DetectorContext) -> tuple[str, ...]:
+        """Evaluate only checks selected by the current camera client."""
+
+        return tuple(
+            detector.behavior_type
+            for detector in self.detectors
+            if detector.behavior_type in self._enabled_behaviors
+            and detector.evaluate(context)
+        )
+
     def analyze(self, frame: Any, now: float | None = None) -> list[FaceBehavior]:
         """Analyze all faces and hands found in one BGR frame."""
 
@@ -305,35 +355,53 @@ class BehaviorEngine:
         height, width = frame.shape[:2]
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         face_result = self._face_mesh.process(rgb_frame)
-        hand_result = self._hands.process(rgb_frame)
-        hands = [
-            [(point.x * width, point.y * height) for point in landmarks.landmark]
-            for landmarks in hand_result.multi_hand_landmarks or []
-        ]
+        hands: list[list[Point]] = []
+        if "HAND_ON_FACE" in self._enabled_behaviors:
+            hand_result = self._hands.process(rgb_frame)
+            hands = [
+                [(point.x * width, point.y * height) for point in landmarks.landmark]
+                for landmarks in hand_result.multi_hand_landmarks or []
+            ]
         faces = face_result.multi_face_landmarks or []
+        face_points = [
+            [(point.x * width, point.y * height) for point in face.landmark]
+            for face in faces
+        ]
+        tracked_boxes = self._tracker.update(
+            [_face_box(points, width, height) for points in face_points]
+        )
         current_time = time.monotonic() if now is None else now
         results: list[FaceBehavior] = []
-        for index, face in enumerate(faces):
-            points = [(point.x * width, point.y * height) for point in face.landmark]
-            box = _face_box(points, width, height)
-            ear = (
-                eye_aspect_ratio([points[i] for i in LEFT_EYE])
-                + eye_aspect_ratio([points[i] for i in RIGHT_EYE])
-            ) / 2
-            mar = mouth_aspect_ratio(points[61], points[291], points[13], points[14])
-            pitch, yaw, roll = estimate_head_pose(
-                [points[i] for i in POSE_LANDMARKS], frame.shape
-            )
-            hand_distance = min(
-                (
-                    minimum_relative_hand_face_distance(
-                        hand, [points[i] for i in FACE_BOUNDARY], box.width
-                    )
-                    for hand in hands
-                ),
-                default=math.inf,
-            )
-            track_key = f"face-{index}"
+        for points, tracked_box in zip(face_points, tracked_boxes):
+            box = tracked_box.box
+            ear = 0.0
+            if "SLEEPING" in self._enabled_behaviors:
+                ear = (
+                    eye_aspect_ratio([points[i] for i in LEFT_EYE])
+                    + eye_aspect_ratio([points[i] for i in RIGHT_EYE])
+                ) / 2
+            mar = 0.0
+            if "TALKING" in self._enabled_behaviors:
+                mar = mouth_aspect_ratio(
+                    points[61], points[291], points[13], points[14]
+                )
+            pitch, yaw, roll = 0.0, 0.0, 0.0
+            if self._enabled_behaviors & HEAD_POSE_BEHAVIORS:
+                pitch, yaw, roll = estimate_head_pose(
+                    [points[i] for i in POSE_LANDMARKS], frame.shape
+                )
+            hand_distance = math.inf
+            if "HAND_ON_FACE" in self._enabled_behaviors:
+                hand_distance = min(
+                    (
+                        minimum_relative_hand_face_distance(
+                            hand, [points[i] for i in FACE_BOUNDARY], box.width
+                        )
+                        for hand in hands
+                    ),
+                    default=math.inf,
+                )
+            track_key = f"face-{tracked_box.track_id}"
             context = DetectorContext(
                 track_key=track_key,
                 now=current_time,
@@ -345,13 +413,19 @@ class BehaviorEngine:
                 hand_face_distance=hand_distance,
                 face_count=len(faces),
             )
-            alerts = tuple(
-                detector.behavior_type
-                for detector in self.detectors
-                if detector.evaluate(context)
-            )
+            alerts = self.evaluate_detectors(context)
             results.append(
-                FaceBehavior(box, track_key, ear, mar, pitch, yaw, roll, alerts)
+                FaceBehavior(
+                    box,
+                    tracked_box.track_id,
+                    track_key,
+                    ear,
+                    mar,
+                    pitch,
+                    yaw,
+                    roll,
+                    alerts,
+                )
             )
         return results
 
@@ -364,3 +438,13 @@ def _face_box(points: Sequence[Point], width: int, height: int) -> BoundingBox:
     right = min(width, int(max(x_values)))
     bottom = min(height, int(max(y_values)))
     return BoundingBox(left, top, max(1, right - left), max(1, bottom - top))
+
+
+def normalize_behavior_types(behavior_types: Iterable[str]) -> frozenset[str]:
+    """Validate and normalize behavior names received from a camera client."""
+
+    normalized = frozenset(behavior_types)
+    unknown = normalized - BEHAVIOR_TYPES
+    if unknown:
+        raise ValueError(f"Unknown behavior types: {', '.join(sorted(unknown))}")
+    return normalized

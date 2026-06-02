@@ -6,12 +6,14 @@ const state = {
   alerts: [],
   waitingFrame: false,
   cameraTimer: null,
+  enabledBehaviors: new Set(["SLEEPING", "HAND_ON_FACE", "CHEATING", "TALKING"]),
 };
 
 const $ = (selector) => document.querySelector(selector);
 const camera = $("#camera");
 const canvas = $("#capture-canvas");
 const frame = $("#processed-frame");
+const THEME_STORAGE_KEY = "smart-classroom-theme";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -38,6 +40,18 @@ function toast(message, error = false) {
   setTimeout(() => item.remove(), 4200);
 }
 
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem(THEME_STORAGE_KEY, theme);
+  const button = $("#theme-toggle-button");
+  button.textContent = theme === "dark" ? "Giao diện sáng" : "Giao diện tối";
+  button.setAttribute("aria-label", button.textContent);
+}
+
+function toggleTheme() {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+}
+
 async function login(event) {
   event.preventDefault();
   const password = new FormData(event.target).get("password");
@@ -57,6 +71,7 @@ async function login(event) {
 }
 
 async function startCamera() {
+  if (state.stream) return;
   try {
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -67,10 +82,35 @@ async function startCamera() {
     $("#camera-placeholder").style.display = "none";
     $("#start-camera-button").textContent = "Camera đang bật";
     $("#start-camera-button").disabled = true;
+    $("#stop-camera-button").disabled = false;
     connectSocket();
   } catch (error) {
     toast(`Không thể mở camera: ${error.message}`, true);
   }
+}
+
+function stopCamera() {
+  clearInterval(state.cameraTimer);
+  state.cameraTimer = null;
+  if (state.socket) {
+    state.socket.onclose = null;
+    state.socket.close();
+    state.socket = null;
+  }
+  if (state.stream) {
+    for (const track of state.stream.getTracks()) track.stop();
+    state.stream = null;
+  }
+  camera.srcObject = null;
+  state.waitingFrame = false;
+  frame.removeAttribute("src");
+  frame.style.display = "none";
+  $("#camera-placeholder").style.display = "grid";
+  $("#start-camera-button").textContent = "Bật camera";
+  $("#start-camera-button").disabled = false;
+  $("#stop-camera-button").disabled = true;
+  $("#engine-message").textContent = "";
+  setSocketStatus(false);
 }
 
 function connectSocket() {
@@ -80,6 +120,8 @@ function connectSocket() {
   state.socket.binaryType = "arraybuffer";
   state.socket.onopen = () => {
     setSocketStatus(true);
+    sendBehaviorConfig();
+    clearInterval(state.cameraTimer);
     state.cameraTimer = setInterval(sendFrame, 100);
   };
   state.socket.onmessage = ({ data }) => {
@@ -87,6 +129,11 @@ function connectSocket() {
     const payload = JSON.parse(data);
     if (payload.type === "error") {
       toast(payload.message, true);
+      return;
+    }
+    if (payload.type === "behavior_config") {
+      state.enabledBehaviors = new Set(payload.enabled_behaviors);
+      renderBehaviorOptions();
       return;
     }
     frame.src = `data:image/jpeg;base64,${payload.image}`;
@@ -97,11 +144,40 @@ function connectSocket() {
     if ((payload.faces || []).some((face) => face.student_id)) refreshSession();
   };
   state.socket.onclose = () => {
+    state.socket = null;
     setSocketStatus(false);
     clearInterval(state.cameraTimer);
+    state.cameraTimer = null;
     state.waitingFrame = false;
     if (state.stream) setTimeout(connectSocket, 1800);
   };
+}
+
+function toggleBehavior(event) {
+  const behaviorType = event.currentTarget.dataset.behavior;
+  if (state.enabledBehaviors.has(behaviorType)) {
+    state.enabledBehaviors.delete(behaviorType);
+  } else {
+    state.enabledBehaviors.add(behaviorType);
+  }
+  renderBehaviorOptions();
+  sendBehaviorConfig();
+}
+
+function renderBehaviorOptions() {
+  for (const button of document.querySelectorAll(".behavior-toggle")) {
+    const active = state.enabledBehaviors.has(button.dataset.behavior);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+}
+
+function sendBehaviorConfig() {
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return;
+  state.socket.send(JSON.stringify({
+    type: "behavior_config",
+    enabled_behaviors: [...state.enabledBehaviors],
+  }));
 }
 
 function sendFrame() {
@@ -112,7 +188,7 @@ function sendFrame() {
   canvas.getContext("2d").drawImage(camera, 0, 0);
   state.waitingFrame = true;
   canvas.toBlob((blob) => {
-    if (!blob || state.socket.readyState !== WebSocket.OPEN) {
+    if (!blob || !state.socket || state.socket.readyState !== WebSocket.OPEN) {
       state.waitingFrame = false;
       return;
     }
@@ -266,12 +342,26 @@ function addAlert(alert) {
 
 function renderAlerts() {
   $("#alert-stat").textContent = String(state.alerts.length);
+  $("#clear-alerts-button").disabled = state.alerts.length === 0;
   $("#alert-list").innerHTML = state.alerts.map((alert) => `
     <div class="alert-item">
       <strong>${escapeHtml(alert.label || alert.behavior_type)} · ${escapeHtml(alert.fullname)}</strong>
       <span>${alert.timestamp ? new Date(alert.timestamp).toLocaleString("vi-VN") : "Vừa phát hiện"}</span>
     </div>
   `).join("") || '<span class="badge absent">Chưa có cảnh báo</span>';
+}
+
+async function clearAlerts() {
+  if (!state.alerts.length) return;
+  if (!window.confirm("Xóa toàn bộ audit trail và ảnh bằng chứng đã lưu?")) return;
+  try {
+    const result = await api("/api/behaviors", { method: "DELETE" });
+    state.alerts = [];
+    renderAlerts();
+    toast(`Đã xóa ${result.deleted} bản ghi audit trail`);
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 function initials(name) {
@@ -285,15 +375,22 @@ function escapeHtml(value) {
 }
 
 $("#login-form").addEventListener("submit", login);
+$("#theme-toggle-button").addEventListener("click", toggleTheme);
 $("#start-camera-button").addEventListener("click", startCamera);
+$("#stop-camera-button").addEventListener("click", stopCamera);
+for (const button of document.querySelectorAll(".behavior-toggle")) {
+  button.addEventListener("click", toggleBehavior);
+}
 $("#start-session-button").addEventListener("click", startSession);
 $("#finish-session-button").addEventListener("click", finishSession);
 $("#pick-button").addEventListener("click", pickStudent);
 $("#reset-called-button").addEventListener("click", resetCalled);
+$("#clear-alerts-button").addEventListener("click", clearAlerts);
 $("#close-picker-button").addEventListener("click", () => $("#picker-modal").classList.remove("visible"));
 $("#toggle-register-button").addEventListener("click", () => $("#register-form").classList.toggle("hidden"));
 $("#register-form").addEventListener("submit", registerStudent);
 $("#logout-button").addEventListener("click", async () => {
+  stopCamera();
   await api("/api/auth/logout", { method: "POST" });
   location.reload();
 });
@@ -304,3 +401,5 @@ api("/api/auth/status")
     refreshDashboard();
   })
   .catch(() => $("#login-modal").classList.add("visible"));
+
+applyTheme(document.documentElement.dataset.theme || "dark");

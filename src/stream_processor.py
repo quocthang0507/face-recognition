@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from .face_engine import (
 from .models import ClassroomSession
 from .services import BehaviorLogService, ClassroomService, StudentService
 from .storage import PrivateStorage
+from .tracking import TrackedBox
 
 BEHAVIOR_LABELS = {
     "SLEEPING": "Sleeping",
@@ -93,14 +94,33 @@ class StreamProcessor:
         self.behavior_engine = behavior_engine or BehaviorEngine()
         self.attendance = AttendanceStabilizer()
 
+    @property
+    def enabled_behaviors(self) -> frozenset[str]:
+        """Return behavior checks enabled for this camera stream."""
+
+        return self.behavior_engine.enabled_behaviors
+
+    def set_enabled_behaviors(self, behavior_types: Iterable[str]) -> None:
+        """Update behavior checks without restarting the camera stream."""
+
+        self.behavior_engine.set_enabled_behaviors(behavior_types)
+
     def process(self, raw_jpeg: bytes, db: Session) -> FrameResult:
         """Decode, analyze, annotate and encode one camera frame."""
 
         frame = decode_jpeg(raw_jpeg)
         students = StudentService.list_all(db)
         errors: list[str] = []
+        behaviors = self.behavior_engine.analyze(frame)
+        tracked_boxes = [
+            TrackedBox(behavior.track_id, behavior.box) for behavior in behaviors
+        ]
         try:
-            matches, refreshed = self.face_engine.recognize_if_due(frame, students)
+            matches, refreshed = self.face_engine.recognize_if_due(
+                frame,
+                students,
+                tracked_boxes=tracked_boxes if self.behavior_engine.available else None,
+            )
         except FaceEngineUnavailable as exc:
             matches, refreshed = [], False
             errors.append(str(exc))
@@ -108,7 +128,6 @@ class StreamProcessor:
         if active_session and refreshed:
             for student_id in self.attendance.observe(matches):
                 ClassroomService.mark_present(db, active_session.id, student_id)
-        behaviors = self.behavior_engine.analyze(frame)
         alerts = self._save_alerts(frame, behaviors, matches, active_session, db)
         draw_overlay(frame, matches, behaviors)
         encoded = encode_jpeg(frame)
@@ -128,33 +147,41 @@ class StreamProcessor:
         active_session: ClassroomSession | None,
         db: Session,
     ) -> list[dict[str, object]]:
-        if active_session is None:
-            return []
         alerts: list[dict[str, object]] = []
         snapshot: bytes | None = None
         for behavior in behaviors:
-            identity = closest_match(behavior.box, matches)
+            identity = next(
+                (
+                    match
+                    for match in matches
+                    if match.track_id is not None
+                    and match.track_id == behavior.track_id
+                ),
+                None,
+            ) or closest_match(behavior.box, matches)
             for behavior_type in behavior.alerts:
-                if snapshot is None:
-                    snapshot = encode_jpeg(frame)
-                snapshot_path = self.storage.save_snapshot(snapshot)
-                log = BehaviorLogService.create(
-                    db,
-                    session_id=active_session.id,
-                    behavior_type=behavior_type,
-                    snapshot_path=snapshot_path,
-                    student_id=identity.student_id if identity else None,
-                )
-                alerts.append(
-                    {
-                        "id": log.id,
-                        "behavior_type": behavior_type,
-                        "label": BEHAVIOR_LABELS[behavior_type],
-                        "student_id": identity.student_id if identity else None,
-                        "fullname": identity.fullname if identity else "Unknown",
-                        "snapshot_url": f"/api/snapshots/{snapshot_path}",
-                    }
-                )
+                alert = {
+                    "id": None,
+                    "behavior_type": behavior_type,
+                    "label": BEHAVIOR_LABELS[behavior_type],
+                    "student_id": identity.student_id if identity else None,
+                    "fullname": identity.fullname if identity else "Unknown",
+                    "snapshot_url": None,
+                }
+                if active_session is not None:
+                    if snapshot is None:
+                        snapshot = encode_jpeg(frame)
+                    snapshot_path = self.storage.save_snapshot(snapshot)
+                    log = BehaviorLogService.create(
+                        db,
+                        session_id=active_session.id,
+                        behavior_type=behavior_type,
+                        snapshot_path=snapshot_path,
+                        student_id=identity.student_id if identity else None,
+                    )
+                    alert["id"] = log.id
+                    alert["snapshot_url"] = f"/api/snapshots/{snapshot_path}"
+                alerts.append(alert)
         return alerts
 
 

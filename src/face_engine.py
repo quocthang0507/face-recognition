@@ -10,31 +10,11 @@ from typing import Any, Protocol, Sequence
 from .config import settings
 from .models import Student
 from .services import deserialize_embedding
+from .tracking import BoundingBox, TrackedBox
 
 
 class FaceEngineUnavailable(RuntimeError):
     """Raised when an optional AI dependency is not installed."""
-
-
-@dataclass(frozen=True)
-class BoundingBox:
-    """Pixel coordinates for a detected face rectangle."""
-
-    x: int
-    y: int
-    width: int
-    height: int
-
-    @property
-    def center(self) -> tuple[float, float]:
-        """Return the center point of this rectangle."""
-
-        return self.x + self.width / 2, self.y + self.height / 2
-
-    def to_dict(self) -> dict[str, int]:
-        """Return a JSON-serializable box."""
-
-        return {"x": self.x, "y": self.y, "width": self.width, "height": self.height}
 
 
 @dataclass(frozen=True)
@@ -46,6 +26,7 @@ class FaceMatch:
     student_code: str | None
     fullname: str
     confidence: float
+    track_id: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable face match."""
@@ -56,6 +37,7 @@ class FaceMatch:
             "student_code": self.student_code,
             "fullname": self.fullname,
             "confidence": round(self.confidence, 1),
+            "track_id": self.track_id,
         }
 
 
@@ -182,6 +164,7 @@ class FaceRecognitionEngine:
         self._provider = provider
         self._last_run = 0.0
         self._cached_matches: list[FaceMatch] = []
+        self._cached_by_track: dict[int, FaceMatch] = {}
 
     @property
     def detection_available(self) -> bool:
@@ -192,39 +175,57 @@ class FaceRecognitionEngine:
     def registration_embedding(self, frame: Any) -> list[float]:
         """Extract a face embedding from the largest face in an uploaded image."""
 
-        provider = self._embedding_provider()
+        if not self.locator.available:
+            raise FaceEngineUnavailable("MediaPipe face detection is not available")
         boxes = self.locator.locate(frame)
-        if boxes:
-            face_box = max(boxes, key=lambda box: box.width * box.height)
-            frame = crop_face(frame, face_box)
-        return provider.embed(frame)
+        if not boxes:
+            raise ValueError("No face was detected in the registration image")
+        face_box = max(boxes, key=lambda box: box.width * box.height)
+        return self._embedding_provider().embed(crop_face(frame, face_box))
 
     def recognize_if_due(
         self,
         frame: Any,
         students: Sequence[Student],
+        tracked_boxes: Sequence[TrackedBox] | None = None,
         now: float | None = None,
     ) -> tuple[list[FaceMatch], bool]:
         """Recognize faces at the configured interval and reuse cached matches."""
 
         current_time = time.monotonic() if now is None else now
         if current_time - self._last_run < settings.recognition_interval_seconds:
+            if tracked_boxes is not None:
+                return self._project_cached_matches(tracked_boxes), False
             return self._cached_matches, False
         self._last_run = current_time
-        boxes = self.locator.locate(frame)
+        candidates = (
+            list(tracked_boxes)
+            if tracked_boxes is not None
+            else [TrackedBox(0, box) for box in self.locator.locate(frame)]
+        )
+        boxes = [candidate.box for candidate in candidates]
         if not boxes or not students:
             self._cached_matches = [
-                FaceMatch(box, None, None, "Unknown", 0.0) for box in boxes
+                FaceMatch(
+                    candidate.box,
+                    None,
+                    None,
+                    "Unknown",
+                    0.0,
+                    candidate.track_id or None,
+                )
+                for candidate in candidates
             ]
+            self._cache_tracked_matches()
             return self._cached_matches, True
         provider = self._embedding_provider()
         known_embeddings = [
             (student, deserialize_embedding(student.embedding)) for student in students
         ]
         matches: list[FaceMatch] = []
-        for box in boxes:
+        for candidate in candidates:
             try:
-                embedding = provider.embed(crop_face(frame, box))
+                embedding = provider.embed(crop_face(frame, candidate.box))
                 student, confidence = best_embedding_match(
                     embedding, known_embeddings, settings.recognition_confidence
                 )
@@ -232,15 +233,56 @@ class FaceRecognitionEngine:
                 student, confidence = None, 0.0
             matches.append(
                 FaceMatch(
-                    box=box,
+                    box=candidate.box,
                     student_id=student.id if student else None,
                     student_code=student.student_code if student else None,
                     fullname=student.fullname if student else "Unknown",
                     confidence=confidence,
+                    track_id=candidate.track_id or None,
                 )
             )
         self._cached_matches = matches
+        self._cache_tracked_matches()
         return matches, True
+
+    def _cache_tracked_matches(self) -> None:
+        self._cached_by_track = {
+            match.track_id: match
+            for match in self._cached_matches
+            if match.track_id is not None
+        }
+
+    def _project_cached_matches(
+        self, tracked_boxes: Sequence[TrackedBox]
+    ) -> list[FaceMatch]:
+        """Move cached identities to the current lightweight landmark boxes."""
+
+        projected: list[FaceMatch] = []
+        for tracked_box in tracked_boxes:
+            cached = self._cached_by_track.get(tracked_box.track_id)
+            if cached is None:
+                projected.append(
+                    FaceMatch(
+                        tracked_box.box,
+                        None,
+                        None,
+                        "Unknown",
+                        0.0,
+                        tracked_box.track_id,
+                    )
+                )
+                continue
+            projected.append(
+                FaceMatch(
+                    tracked_box.box,
+                    cached.student_id,
+                    cached.student_code,
+                    cached.fullname,
+                    cached.confidence,
+                    tracked_box.track_id,
+                )
+            )
+        return projected
 
     def _embedding_provider(self) -> EmbeddingProvider:
         if self._provider is None:
