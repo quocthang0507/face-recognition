@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Classroom</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <main class="shell">
+      <header class="topbar glass">
+        <div>
+          <p class="eyebrow">SMART CLASSROOM</p>
+          <h1>Classroom Monitor</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="socket-status" class="status-pill offline">Camera offline</span>
+          <button id="logout-button" class="button ghost">Đăng xuất</button>
+        </div>
+      </header>
+
+      <section class="stats">
+        <article class="stat glass">
+          <span>Phiên học</span>
+          <strong id="session-stat">Chưa bắt đầu</strong>
+        </article>
+        <article class="stat glass">
+          <span>Có mặt</span>
+          <strong id="present-stat">0 / 0</strong>
+        </article>
+        <article class="stat glass">
+          <span>Đã gọi</span>
+          <strong id="called-stat">0</strong>
+        </article>
+        <article class="stat glass alert-stat">
+          <span>Cảnh báo</span>
+          <strong id="alert-stat">0</strong>
+        </article>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="camera-card glass">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">LIVE ANALYSIS</p>
+              <h2>Camera lớp học</h2>
+            </div>
+            <div class="camera-actions">
+              <button id="start-camera-button" class="button secondary">Bật camera</button>
+              <button id="start-session-button" class="button primary">Bắt đầu phiên</button>
+              <button id="finish-session-button" class="button ghost" disabled>Kết thúc</button>
+            </div>
+          </div>
+          <div class="video-stage">
+            <video id="camera" autoplay playsinline muted></video>
+            <img id="processed-frame" alt="Khung hình camera đã xử lý" />
+            <div id="camera-placeholder" class="camera-placeholder">
+              <div class="scan-icon"></div>
+              <span>Bật camera để bắt đầu phân tích</span>
+            </div>
+          </div>
+          <canvas id="capture-canvas" hidden></canvas>
+          <div id="engine-message" class="engine-message"></div>
+        </article>
+
+        <aside class="side-column">
+          <article class="picker-card glass">
+            <p class="eyebrow">RANDOM PICKER</p>
+            <h2>Gọi trả bài</h2>
+            <p>Chỉ chọn học sinh đã được xác nhận có mặt và chưa được gọi trong vòng hiện tại.</p>
+            <button id="pick-button" class="button primary full" disabled>Gọi ngẫu nhiên</button>
+            <button id="reset-called-button" class="button ghost full" disabled>Reset lượt gọi</button>
+          </article>
+
+          <article class="register-card glass">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">ENROLLMENT</p>
+                <h2>Đăng ký học sinh</h2>
+              </div>
+              <button id="toggle-register-button" class="icon-button">+</button>
+            </div>
+            <form id="register-form" class="register-form hidden">
+              <input name="student_code" placeholder="Mã học sinh" maxlength="20" required />
+              <input name="fullname" placeholder="Họ và tên" maxlength="100" required />
+              <label class="file-field">
+                <span>Ảnh tải lên (không bắt buộc)</span>
+                <input name="image" type="file" accept="image/jpeg,image/png,image/webp" />
+              </label>
+              <button class="button secondary full" type="submit">Đăng ký từ camera / ảnh</button>
+            </form>
+          </article>
+        </aside>
+      </section>
+
+      <section class="lower-grid">
+        <article class="glass table-card">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">ATTENDANCE</p>
+              <h2>Danh sách lớp</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Học sinh</th><th>Mã số</th><th>Có mặt</th><th>Trả bài</th></tr>
+              </thead>
+              <tbody id="student-list"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="glass alert-card">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">AUDIT TRAIL</p>
+              <h2>Cảnh báo mới nhất</h2>
+            </div>
+          </div>
+          <div id="alert-list" class="alert-list"></div>
+        </article>
+      </section>
+    </main>
+
+    <div id="login-modal" class="modal visible">
+      <form id="login-form" class="modal-panel glass">
+        <p class="eyebrow">TEACHER ACCESS</p>
+        <h2>Đăng nhập Dashboard</h2>
+        <p>Nhập mật khẩu giáo viên để mở API và luồng camera.</p>
+        <input name="password" type="password" placeholder="Mật khẩu giáo viên" required />
+        <button class="button primary full" type="submit">Đăng nhập</button>
+        <span id="login-error" class="form-error"></span>
+      </form>
+    </div>
+
+    <div id="picker-modal" class="modal">
+      <div class="modal-panel picker-result glass">
+        <p class="eyebrow">STUDENT SELECTED</p>
+        <div class="avatar-ring">
+          <img id="picked-avatar" alt="" />
+          <span id="picked-initials">?</span>
+        </div>
+        <h2 id="picked-name">Đang chọn...</h2>
+        <p id="picked-code"></p>
+        <button id="close-picker-button" class="button primary full">Đóng</button>
+      </div>
+    </div>
+
+    <div id="toast-container" class="toast-container"></div>
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>
