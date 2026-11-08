@@ -26,7 +26,7 @@ Hệ thống ứng dụng Trí tuệ Nhân tạo (AI) và Thị giác Máy tính
     *   **Trao đổi (Talking)**: Phân tích chỉ số mở miệng (Mouth Aspect Ratio) biến động ở tần số nói chuyện.
 *   **Cảnh báo âm thanh & Giọng nói (Audio & TTS Warnings)**:
     *   Phát tiếng bíp kép cảnh báo sử dụng Web Audio API (chạy offline hoàn toàn).
-    *   Đọc to cảnh báo bằng tiếng Việt (Web Speech TTS) như *"Cảnh báo ngủ gục: Nguyễn Văn A"*.
+    *   Đọc to cảnh báo bằng giọng tiếng Việt chạy ngay trên máy chủ (Piper, không gửi dữ liệu ra ngoài) như *"Cảnh báo ngủ gục: Nguyễn Văn A"*.
     *   Cơ chế **Alert Cooldown (10 giây)** thông minh cho mỗi học sinh + loại hành vi để ngăn chặn ồn ào và chồng chéo giọng nói.
     *   Có các checkbox điều khiển bật/tắt trực quan và lưu trạng thái vào trình duyệt.
 *   **Tối ưu hóa hiệu năng & Chạy mượt (Downscaling, Preloading & FPS Control)**:
@@ -118,7 +118,12 @@ Toàn bộ mã nguồn cốt lõi của ứng dụng được tổ chức tập 
     pip install -r requirements-ai.txt
     ```
 
-4.  **Cấu hình thông tin đăng nhập**:
+4.  **Tải giọng đọc tiếng Việt** (khoảng 63 MB, không có giọng này thì hệ thống chỉ phát tiếng bíp):
+    ```bash
+    python -m piper.download_voices vi_VN-vais1000-medium --download-dir models/tts
+    ```
+
+5.  **Cấu hình thông tin đăng nhập**:
     Mật khẩu giáo viên mặc định khi chạy development là `change-me`. Có thể thay đổi mật khẩu và khóa ký token bằng biến môi trường:
     ```bash
     export FACE_APP_TEACHER_PASSWORD='replace-this-password'

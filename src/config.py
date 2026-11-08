@@ -94,6 +94,14 @@ class Settings:
     )
     cache_ttl_seconds: float = 5.0
     profile: bool = field(default_factory=lambda: _as_bool("FACE_APP_PROFILE"))
+    tts_model: Path = field(
+        default_factory=lambda: Path(
+            os.getenv(
+                "FACE_APP_TTS_MODEL",
+                str(BASE_DIR.parent / "models" / "tts" / "vi_VN-vais1000-medium.onnx"),
+            )
+        )
+    )
     login_max_failures: int = 5
     login_lockout_seconds: int = 5 * 60
 

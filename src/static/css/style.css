@@ -370,6 +370,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .checkbox-label input { flex: none; width: 20px; height: 20px; min-height: 0; margin: 0; padding: 0; accent-color: var(--blue); cursor: pointer; }
 .settings-groupbox { margin: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 14px 14px; }
 .settings-groupbox legend { padding: 0 8px; }
+.setting-note { margin: 8px 0 0; color: var(--muted); font-size: .9375rem; }
 .settings-groupbox.disabled #tts-voice-container { opacity: .45; pointer-events: none; }
 
 .current-user { color: var(--muted); font-weight: 600; white-space: nowrap; }

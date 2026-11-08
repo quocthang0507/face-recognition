@@ -45,6 +45,9 @@ src/data/snapshots/*
 # Test data created by the "dữ liệu thử nghiệm" launch configuration
 src/data-test/
 
+# Downloaded Piper voice models
+models/tts/
+
 # IDEs and Editors
 .vscode/
 .idea/

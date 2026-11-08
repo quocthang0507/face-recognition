@@ -5,6 +5,7 @@ const state = {
   students: [],
   classes: [],
   classId: null,
+  serverSpeech: false,
   alerts: [],
   waitingFrame: false,
   cameraTimer: null,
@@ -570,7 +571,7 @@ function setSocketStatus(online) {
 
 async function refreshDashboard() {
   await refreshClasses();
-  await Promise.all([refreshSession(), refreshAlerts()]);
+  await Promise.all([refreshSession(), refreshAlerts(), refreshSpeechStatus()]);
 }
 
 const CLASS_STORAGE_KEY = "smart-classroom-class";
@@ -1160,6 +1161,7 @@ function populateVoices() {
       ${voice.name} (${voice.lang})
     </option>
   `).join("") || '<option value="">Không tìm thấy giọng đọc</option>';
+  renderSpeechStatus();
 }
 
 if ("speechSynthesis" in window) {
@@ -1167,28 +1169,82 @@ if ("speechSynthesis" in window) {
   populateVoices();
 }
 
-function speakWarning(text) {
+let speechRequest = 0;
+let speechPlayer = null;
+
+function vietnameseBrowserVoice() {
+  const selected = $("#tts-voice-select-modal").value;
+  const vietnamese = voices.filter((voice) => voice.lang.toLowerCase().startsWith("vi"));
+  return vietnamese.find((voice) => voice.name === selected) || vietnamese[0] || null;
+}
+
+function renderSpeechStatus() {
+  $("#tts-voice-container").style.display = state.serverSpeech ? "none" : "";
+  let message = "";
+  if (state.serverSpeech) message = "Đang dùng giọng đọc tiếng Việt cài trên máy chủ.";
+  else if (!vietnameseBrowserVoice()) message = "Máy này chưa có giọng tiếng Việt nên hệ thống chỉ phát tiếng bíp.";
+  $("#tts-status").textContent = message;
+}
+
+async function refreshSpeechStatus() {
+  try {
+    state.serverSpeech = (await api("/api/tts/status")).available;
+  } catch (error) {
+    state.serverSpeech = false;
+  }
+  renderSpeechStatus();
+}
+
+function stopSpeech() {
+  speechRequest += 1;
+  if (speechPlayer) speechPlayer.pause();
+  speechPlayer = null;
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+
+async function playServerSpeech(text, request) {
+  const response = await fetch("/api/tts", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) throw new Error("Không tạo được giọng đọc");
+  const audio = await response.blob();
+  if (request !== speechRequest) return; // a newer sentence has replaced this one
+  const url = URL.createObjectURL(audio);
+  speechPlayer = new Audio(url);
+  speechPlayer.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
+  await speechPlayer.play();
+}
+
+function speakWithBrowser(text) {
+  // Never fall back to a foreign voice: it mangles Vietnamese names.
+  const voice = "speechSynthesis" in window ? vietnameseBrowserVoice() : null;
+  if (!voice) return;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.voice = voice;
+  utterance.lang = voice.lang;
+  window.speechSynthesis.speak(utterance);
+}
+
+async function speakWarning(text) {
   const checkbox = $("#tts-alert-checkbox-modal");
   if (!checkbox || !checkbox.checked) return;
+  stopSpeech();
+  const request = speechRequest;
   try {
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = "vi-VN";
-      utterance.rate = 1.0;
-      
-      const voiceSelect = $("#tts-voice-select-modal");
-      if (voiceSelect && voiceSelect.value) {
-        const selectedVoice = voices.find(v => v.name === voiceSelect.value);
-        if (selectedVoice) {
-          utterance.voice = selectedVoice;
-          utterance.lang = selectedVoice.lang;
-        }
-      }
-      window.speechSynthesis.speak(utterance);
+    if (state.serverSpeech) {
+      await playServerSpeech(text, request);
+      return;
     }
-  } catch (e) {
-    console.warn("Speech Synthesis error:", e);
+  } catch (error) {
+    console.warn("Không phát được giọng đọc máy chủ:", error);
+  }
+  try {
+    speakWithBrowser(text);
+  } catch (error) {
+    console.warn("Speech Synthesis error:", error);
   }
 }
 
@@ -1377,7 +1433,8 @@ function initials(name) {
 function escapeHtml(value) {
   const span = document.createElement("span");
   span.textContent = value || "";
-  return span.innerHTML;
+  // innerHTML leaves quotes alone, which is unsafe inside attribute values.
+  return span.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 $("#login-form").addEventListener("submit", login);

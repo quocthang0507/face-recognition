@@ -75,10 +75,12 @@ from .migrate import purge_expired_backups, sqlite_file
 from .reembed import reembed_outdated
 from .storage import PrivateStorage
 from .stream_processor import BEHAVIOR_LABELS, StreamProcessor, decode_jpeg
+from .tts import SpeechUnavailable, VietnameseSpeech
 
 logger = logging.getLogger("smart_classroom")
 storage = PrivateStorage()
 login_throttle = LoginThrottle()
+speech = VietnameseSpeech()
 _shared_engine: FaceRecognitionEngine | None = None
 _shared_engine_lock = threading.Lock()
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -146,6 +148,12 @@ class ConsentRequest(BaseModel):
     note: str | None = Field(default=None, max_length=200)
 
 
+class SpeechRequest(BaseModel):
+    """A short sentence to read aloud."""
+
+    text: str
+
+
 class AttendanceUpdate(BaseModel):
     """Manual attendance correction by the teacher."""
 
@@ -176,6 +184,13 @@ def _registration_embedding(frame) -> list[float]:
     engine = shared_face_engine()
     with _shared_engine_lock:
         return engine.registration_embedding(frame)
+
+
+def _preload_speech() -> None:
+    try:
+        speech.preload()
+    except Exception as exc:  # noqa: BLE001 - preload must never stop startup
+        logger.warning("Lỗi tải trước giọng đọc: %s", exc)
 
 
 def _preload_models() -> None:
@@ -213,6 +228,7 @@ async def lifespan(_: FastAPI):
         )
     await asyncio.to_thread(_cleanup_expired_logs)
     asyncio.create_task(asyncio.to_thread(_preload_models))
+    asyncio.create_task(asyncio.to_thread(_preload_speech))
     cleanup_task = asyncio.create_task(_retention_cleanup_loop())
     try:
         yield
@@ -451,6 +467,25 @@ def health() -> dict[str, object]:
         "face_detection": shared_face_engine().detection_available,
         "secure_transport_only": settings.secure_transport_only,
     }
+
+
+@app.get("/api/tts/status", dependencies=[Depends(require_teacher)])
+def speech_status() -> dict[str, bool]:
+    """Say whether this server can read Vietnamese aloud."""
+
+    return {"available": speech.available}
+
+
+@app.post("/api/tts", dependencies=[Depends(require_teacher)])
+def read_aloud(payload: SpeechRequest) -> Response:
+    """Return one sentence as WAV audio, generated on this server."""
+
+    try:
+        return Response(speech.synthesize(payload.text), media_type="audio/wav")
+    except SpeechUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/classes")
