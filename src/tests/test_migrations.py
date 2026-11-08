@@ -225,6 +225,31 @@ def test_adopted_first_release_database_matches_models(engine: Engine) -> None:
     assert differences == []
 
 
+def test_students_with_a_face_count_as_consented(engine: Engine) -> None:
+    with engine.begin() as connection:
+        command.upgrade(migrate._config(connection), "0003")
+        connection.execute(INSERT_STUDENT)
+        connection.execute(
+            text(
+                "INSERT INTO students (student_code, fullname, embedding, created_at) "
+                "VALUES ('HS002', 'Chưa Có Ảnh', '[]', '2026-01-01 00:00:00')"
+            )
+        )
+
+    upgrade_database(engine)
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("SELECT student_code, consent_status FROM students")
+        ).all()
+        statuses = {code: status for code, status in rows}
+        events = list(
+            connection.scalars(text("SELECT student_code FROM consent_events"))
+        )
+    assert statuses == {"HS001": "GRANTED", "HS002": "PENDING"}
+    assert events == ["HS001"]
+
+
 def test_existing_records_move_to_a_default_class(engine: Engine) -> None:
     with engine.begin() as connection:
         command.upgrade(migrate._config(connection), "0002")

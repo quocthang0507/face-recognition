@@ -1,7 +1,7 @@
 # Lộ trình mở rộng phân hệ
 
 Tài liệu dành cho người phát triển và người quyết định phạm vi dự án. Lập ngày
-08/11/2026. **Mục 3 đã xong**, các mục còn lại là đề xuất. Mỗi phân hệ cần có đặc tả
+08/11/2026. **Mục 1, 2 và 3 đã xong**, các mục còn lại là đề xuất. Mỗi phân hệ cần có đặc tả
 riêng trước khi bắt đầu.
 
 Độ lớn là ước lượng tương đối: S (nhỏ), M (vừa), L (lớn).
@@ -21,8 +21,8 @@ Repo tích hợp sẵn 4 kỹ năng, dùng theo thứ tự:
 
 | # | Phân hệ | Giải quyết việc gì | Kỹ năng trọng tâm | Độ lớn |
 |---|---|---|---|---|
-| 1 | Lớp học và tài khoản | Hiện mọi học sinh chung một danh sách và dùng chung một mật khẩu. Thêm lớp, phiên gắn với lớp, tài khoản giáo viên và phân quyền. | Spec, TDD | L |
-| 2 | Đồng ý và dữ liệu sinh trắc | Ghi nhận đồng ý của phụ huynh, cho rút đồng ý và xóa khuôn mặt, học sinh không đồng ý thì điểm danh tay, lưu vết ai đã xem ảnh bằng chứng. | Spec, Review | M |
+| 1 | Lớp học và tài khoản ([đã xong](spec-classes-accounts-consent.md)) | Hiện mọi học sinh chung một danh sách và dùng chung một mật khẩu. Thêm lớp, phiên gắn với lớp, tài khoản giáo viên và phân quyền. | Spec, TDD | L |
+| 2 | Đồng ý và dữ liệu sinh trắc ([đã xong](spec-classes-accounts-consent.md)) | Ghi nhận đồng ý của phụ huynh, cho rút đồng ý và xóa khuôn mặt, học sinh không đồng ý thì điểm danh tay, lưu vết ai đã xem ảnh bằng chứng. | Spec, Review | M |
 | 3 | Kiểm thử giao diện và migration ([đã xong](spec-e2e-alembic.md)) | Đưa kịch bản Playwright vào repo vì `pytest` chưa kiểm tra UI. Chuyển sang Alembic trước khi đổi CSDL ở mục 1. | TDD | S |
 
 ## Đợt 2: Nâng chất lượng nghiệp vụ
@@ -45,12 +45,8 @@ Repo tích hợp sẵn 4 kỹ năng, dùng theo thứ tự:
 
 ## Thứ tự khuyến nghị
 
-Tiếp theo làm **mục 1 và 2 cùng nhau**. Lớp và tài khoản là nền
-cho hầu hết phân hệ còn lại. Đồng ý nên có từ đầu vì thêm sau sẽ phải rà lại dữ liệu
-đã thu.
-
-Nếu cần thấy giá trị sớm cho giáo viên, **mục 4** là lựa chọn tốt nhất vì khá độc
-lập với các mục khác.
+Tiếp theo nên làm **mục 4 (Duyệt cảnh báo)**: API đã có ảnh bằng chứng và nhật ký
+xem ảnh, nên chỉ còn phần màn hình và quy trình xác nhận.
 
 ## Nguyên tắc cần giữ
 

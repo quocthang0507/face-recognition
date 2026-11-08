@@ -13,7 +13,8 @@ export FACE_APP_TOKEN_SECRET='replace-this-random-secret'
 uvicorn src.main:app --reload
 ```
 
-Mở `http://127.0.0.1:8000`, đăng nhập và bật camera.
+Mở `http://127.0.0.1:8000`, đăng nhập bằng tài khoản `admin` với mật khẩu trong
+`FACE_APP_TEACHER_PASSWORD`, rồi bật camera.
 
 Nếu chạy công cụ preview trên macOS, cấp quyền Camera cho Terminal hoặc IDE tại
 `System Settings > Privacy & Security > Camera`. Dashboard trong trình duyệt
@@ -21,8 +22,8 @@ cũng cần được cấp quyền camera khi được hỏi.
 
 ## 2. Đăng ký và Điểm danh
 
-1. Đăng ký ba học sinh, mỗi người dùng một ảnh webcam rõ mặt với góc nhìn hơi
-   khác nhau.
+1. Đăng ký ba học sinh, đánh dấu `Đã có văn bản đồng ý của phụ huynh`, mỗi người
+   dùng một ảnh webcam rõ mặt với góc nhìn hơi khác nhau.
 2. Bắt đầu phiên học.
 3. Lần lượt đưa từng học sinh vào camera trong ít nhất 8 giây.
 4. Xác nhận đúng tên và trạng thái `Có mặt` cho từng học sinh.

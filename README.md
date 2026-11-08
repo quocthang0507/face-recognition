@@ -34,6 +34,7 @@ Hệ thống ứng dụng Trí tuệ Nhân tạo (AI) và Thị giác Máy tính
     - Hỗ trợ dropdown tùy chọn tần suất gửi khung hình (**10 FPS / 5 FPS / 2 FPS**) giúp giáo viên chủ động điều chỉnh hiệu năng và tiết kiệm băng thông khi cần thiết.
     - FastAPI tự động nạp trước (preload) các mô hình DeepFace và MediaPipe khi khởi chạy máy chủ (lifespan), giúp bật camera lên là có hình ảnh phân tích ngay lập tức.
 *   **Hộp thoại Cài đặt Tập trung (Settings Modal)**: Tích hợp cấu hình chọn nguồn camera (Hot-swapping), tần suất gửi khung hình (FPS), bật/tắt âm thanh/giọng nói cảnh báo, **tùy chọn bộ lọc giọng đọc TTS hệ thống** và chuyển đổi giao diện sáng/tối vào một cửa sổ popup duy nhất để làm gọn Dashboard.
+*   **Tài khoản, lớp học và đồng ý dữ liệu sinh trắc**: mỗi giáo viên có tài khoản riêng và chỉ thao tác trên lớp được phân công; chỉ học sinh đã có đồng ý của phụ huynh mới được lưu và nhận diện khuôn mặt.
 *   **Giao diện Dashboard hiện đại**:
     *   **2 chế độ hiển thị**: **Máy tính GV** đầy đủ công cụ và **Chiếu TV** chữ lớn, ẩn công cụ quản trị, che tên học sinh trong cảnh báo. Xem [docs/guides/display-modes.md](docs/guides/display-modes.md).
     *   Giao diện sáng/tối nền đặc, tương phản cao, tự động ghi nhớ tùy chọn trên trình duyệt. Quy ước thiết kế: [docs/reviews/ui-refresh-2026-11.md](docs/reviews/ui-refresh-2026-11.md).
@@ -133,8 +134,10 @@ Sau đó, mở trình duyệt web và truy cập địa chỉ: [http://127.0.0.1
 
 Khi chạy local mà không cấu hình biến môi trường, đăng nhập Dashboard bằng:
 ```text
+Tên đăng nhập: admin
 Mật khẩu: change-me
 ```
+Mật khẩu này chỉ dùng để tạo tài khoản `admin` trong lần chạy đầu tiên. Tạo tài khoản giáo viên, lớp học và ghi nhận đồng ý theo [docs/guides/accounts-classes-consent.md](docs/guides/accounts-classes-consent.md).
 
 Nếu dùng VS Code, chọn cấu hình `Smart Classroom: Web App` trong `Run and Debug`, sau đó nhấn `F5`. Server sẽ khởi động và tự mở Dashboard trên trình duyệt mặc định. Cấu hình local này cũng sử dụng mật khẩu `change-me`.
 

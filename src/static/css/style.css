@@ -380,6 +380,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .admin-class header { display: flex; justify-content: space-between; gap: 12px; font-weight: 700; }
 .admin-class-teachers { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 8px 0; }
 .add-student-form { display: flex; gap: 8px; }
+.consent-note { color: var(--amber); font-weight: 600; }
+.consent-select { width: auto; min-height: var(--control-sm); padding: 4px 8px; font-size: .9375rem; }
+.admin-log { max-height: 260px; overflow-y: auto; }
 .admin-panel { width: min(960px, 100%); }
 .admin-panel h3 { margin: 16px 0 10px; font-size: 1.125rem; }
 .admin-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }

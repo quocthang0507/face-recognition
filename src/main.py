@@ -39,7 +39,7 @@ from .auth import (
     verify_user_token,
 )
 from .config import BASE_DIR, settings
-from .database import SessionLocal, create_tables, get_db
+from .database import SessionLocal, create_tables, engine, get_db
 from .face_engine import (
     FaceEngineUnavailable,
     FaceRecognitionEngine,
@@ -56,9 +56,12 @@ from .models import (
     iso_utc,
 )
 from .services import (
+    AccessLogService,
     BehaviorLogService,
+    CONSENT_GRANTED,
     ClassService,
     ClassroomService,
+    ConsentService,
     DomainError,
     NotFoundError,
     ROLE_ADMIN,
@@ -68,6 +71,7 @@ from .services import (
     has_face_embedding,
     is_late,
 )
+from .migrate import purge_expired_backups, sqlite_file
 from .reembed import reembed_outdated
 from .storage import PrivateStorage
 from .stream_processor import BEHAVIOR_LABELS, StreamProcessor, decode_jpeg
@@ -79,6 +83,7 @@ _shared_engine: FaceRecognitionEngine | None = None
 _shared_engine_lock = threading.Lock()
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+CONSENT_REQUIRED = "Cần có đồng ý của phụ huynh trước khi lưu ảnh khuôn mặt"
 
 
 class LoginRequest(BaseModel):
@@ -134,6 +139,13 @@ class AddStudentRequest(BaseModel):
     student_code: str
 
 
+class ConsentRequest(BaseModel):
+    """One consent decision received from a parent."""
+
+    status: str
+    note: str | None = Field(default=None, max_length=200)
+
+
 class AttendanceUpdate(BaseModel):
     """Manual attendance correction by the teacher."""
 
@@ -144,6 +156,9 @@ class AttendanceUpdate(BaseModel):
 def _cleanup_expired_logs() -> None:
     with SessionLocal() as db:
         BehaviorLogService.cleanup_old(db, storage, settings.retention_days)
+    database = sqlite_file(engine)
+    if database is not None:
+        purge_expired_backups(database, settings.retention_days)
 
 
 def shared_face_engine() -> FaceRecognitionEngine:
@@ -591,17 +606,21 @@ async def register_student(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
     class_id: Annotated[int | None, Form()] = None,
+    consent: Annotated[bool, Form()] = False,
     image: UploadFile | None = None,
 ) -> dict[str, object]:
     """Register a student into a class from a webcam JPEG or uploaded image."""
 
     scope = _scope_class(db, user, class_id)
+    has_image = image is not None and bool(image.filename)
+    if has_image and not consent:
+        raise HTTPException(status_code=409, detail=CONSENT_REQUIRED)
     if db.scalar(select(Student).where(Student.student_code == student_code.strip())):
         raise HTTPException(status_code=409, detail="Mã học sinh đã tồn tại")
 
     embedding = None
     avatar_path = None
-    if image is not None and image.filename:
+    if has_image:
         embedding, content = await _read_face_image(image, db, user)
         avatar_path = storage.save_avatar(content)
 
@@ -618,6 +637,29 @@ async def register_student(
         if avatar_path:
             storage.delete_avatar(avatar_path)
         raise _domain_error(exc) from exc
+    if consent:
+        student = ConsentService.record(
+            db, student.id, CONSENT_GRANTED, user.id, storage
+        )
+    return _student_payload(student)
+
+
+@app.put("/api/students/{student_id}/consent")
+def record_consent(
+    student_id: int,
+    payload: ConsentRequest,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Record a parent's decision about storing this student's face."""
+
+    _require_student_access(db, user, student_id)
+    try:
+        student = ConsentService.record(
+            db, student_id, payload.status, user.id, storage, payload.note
+        )
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
     return _student_payload(student)
 
 
@@ -631,6 +673,8 @@ async def update_student_face(
     """Replace the face sample of a student (re-enrollment)."""
 
     _require_student_access(db, user, student_id)
+    if StudentService.get(db, student_id).consent_status != CONSENT_GRANTED:
+        raise HTTPException(status_code=409, detail=CONSENT_REQUIRED)
     embedding, content = await _read_face_image(
         image, db, user, exclude_student_id=student_id
     )
@@ -674,9 +718,11 @@ def get_avatar(
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh đại diện")
     _require_student_access(db, user, student.id)
     try:
-        return Response(storage.read_avatar(name), media_type="image/jpeg")
+        content = storage.read_avatar(name)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh đại diện") from exc
+    AccessLogService.record(db, user.id, "VIEW_AVATAR", name)
+    return Response(content, media_type="image/jpeg")
 
 
 @app.post("/api/sessions")
@@ -910,9 +956,28 @@ def get_snapshot(
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh chụp bằng chứng")
     _require_session_access(db, user, log.session_id)
     try:
-        return Response(storage.read_snapshot(name), media_type="image/jpeg")
+        content = storage.read_snapshot(name)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh chụp bằng chứng") from exc
+    AccessLogService.record(db, user.id, "VIEW_SNAPSHOT", name)
+    return Response(content, media_type="image/jpeg")
+
+
+@app.get("/api/access-logs", dependencies=[Depends(require_admin)])
+def access_logs(
+    db: Annotated[Session, Depends(get_db)], limit: int = 100
+) -> list[dict[str, object]]:
+    """Return who recently opened protected student images."""
+
+    return [
+        {
+            "username": entry.user.username,
+            "action": entry.action,
+            "target": entry.target,
+            "created_at": iso_utc(entry.created_at),
+        }
+        for entry in AccessLogService.list_recent(db, max(1, min(limit, 500)))
+    ]
 
 
 @app.websocket("/ws")
@@ -1043,6 +1108,7 @@ def _student_payload(student: Student) -> dict[str, object]:
         "student_code": student.student_code,
         "fullname": student.fullname,
         "has_face": has_face_embedding(student),
+        "consent_status": student.consent_status,
         "avatar_url": (
             f"/api/avatars/{student.avatar_path}" if student.avatar_path else None
         ),

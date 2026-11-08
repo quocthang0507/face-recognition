@@ -202,7 +202,7 @@ class StreamProcessor:
         # Avoid two SQLite queries and a JSON decode of every embedding per frame.
         self._gallery = VersionedCache(
             "students",
-            lambda db: Gallery.build(StudentService.list_all(db, self.class_id)),
+            lambda db: Gallery.build(StudentService.recognizable(db, self.class_id)),
         )
         self._active_session = VersionedCache(
             "sessions",

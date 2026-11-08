@@ -97,6 +97,9 @@ class Student(Base):
     embedding: Mapped[str] = mapped_column(Text)
     embedding_model: Mapped[str | None] = mapped_column(String(40), nullable=True)
     avatar_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    consent_status: Mapped[str] = mapped_column(
+        String(10), default="PENDING", server_default="PENDING"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
@@ -136,6 +139,42 @@ class ClassroomSession(Base):
     behavior_logs: Mapped[list["BehaviorLog"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
+
+
+class ConsentEvent(Base):
+    """One recorded consent decision. Rows are only ever added."""
+
+    __tablename__ = "consent_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int | None] = mapped_column(
+        ForeignKey("students.id"), nullable=True, index=True
+    )
+    student_code: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(10))
+    recorded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class AccessLog(Base):
+    """Who opened a protected student image, and when."""
+
+    __tablename__ = "access_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    action: Mapped[str] = mapped_column(String(20))
+    target: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+
+    user: Mapped[User] = relationship()
 
 
 class SessionStudent(Base):

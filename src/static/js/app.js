@@ -127,6 +127,14 @@ async function openAdmin() {
 async function refreshAdmin() {
   await refreshUsers();
   await refreshClasses();
+  const entries = await api("/api/access-logs");
+  $("#admin-access-list").innerHTML = entries.map((entry) => `
+    <tr>
+      <td>${formatDateTime(entry.created_at)}</td>
+      <td>${escapeHtml(entry.username)}</td>
+      <td>${entry.action === "VIEW_SNAPSHOT" ? "Xem ảnh bằng chứng" : "Xem ảnh đại diện"}</td>
+    </tr>
+  `).join("") || '<tr><td colspan="3" class="empty-row">Chưa có lượt xem ảnh nào.</td></tr>';
   const teachers = state.users.filter((user) => user.role === "TEACHER" && user.is_active);
   $("#admin-class-list").innerHTML = state.classes.map((item) => `
     <article class="admin-class" data-class-row="${item.id}">
@@ -667,6 +675,8 @@ function renderSession() {
   $("#finish-session-button").disabled = !active;
   $("#export-session-button").disabled = !active;
   $("#attendance-hint").style.visibility = active ? "visible" : "hidden";
+  const waiting = state.students.filter((student) => student.consent_status === "PENDING").length;
+  $("#consent-note").textContent = waiting ? `${waiting} học sinh chờ đồng ý: camera chưa nhận diện các em này` : "";
   updatePickButtonState();
   $("#reset-called-button").disabled = !active || !called;
   $("#student-list").innerHTML = state.students.map((student) => `
@@ -678,12 +688,51 @@ function renderSession() {
       <td>${student.is_called
         ? `<span class="badge called">Đã gọi</span><span class="source-tag">${formatTime(student.called_at)}</span>`
         : student.called_at ? `<span class="source-tag">Vòng trước · ${formatTime(student.called_at)}</span>` : "-"}</td>
+      <td class="desk-only">${consentSelect(student)}</td>
       <td class="desk-only"><div class="row-actions">
         <button type="button" class="button ghost" data-reenroll="${student.id}" title="Cập nhật ảnh khuôn mặt">${student.has_face ? "Ảnh" : "+ Ảnh"}</button>
         <button type="button" class="button danger" data-delete="${student.id}" title="Xóa học sinh">Xóa</button>
       </div></td>
     </tr>
-  `).join("") || `<tr><td colspan="6" class="empty-row">${state.classId ? "Chưa có học sinh. Bấm nút + ở mục Đăng ký học sinh để thêm." : "Bạn chưa được phân công lớp nào. Hãy liên hệ Quản trị."}</td></tr>`;
+  `).join("") || `<tr><td colspan="7" class="empty-row">${state.classId ? "Chưa có học sinh. Bấm nút + ở mục Đăng ký học sinh để thêm." : "Bạn chưa được phân công lớp nào. Hãy liên hệ Quản trị."}</td></tr>`;
+}
+
+const CONSENT_TEXT = {
+  PENDING: "Chờ xác nhận",
+  GRANTED: "Đã đồng ý",
+  REFUSED: "Từ chối",
+  WITHDRAWN: "Đã rút",
+};
+
+function consentSelect(student) {
+  const options = Object.entries(CONSENT_TEXT).map(([value, label]) => `
+    <option value="${value}" ${value === student.consent_status ? "selected" : ""} ${value === "PENDING" ? "disabled" : ""}>${label}</option>
+  `).join("");
+  return `<select class="select-field consent-select" data-consent="${student.id}" aria-label="Đồng ý của ${escapeHtml(student.fullname)}">${options}</select>`;
+}
+
+async function onConsentChange(event) {
+  const select = event.target.closest("[data-consent]");
+  if (!select) return;
+  const student = state.students.find((item) => item.id === Number(select.dataset.consent));
+  const erases = select.value !== "GRANTED";
+  if (erases && !window.confirm(`Ảnh khuôn mặt và ảnh bằng chứng của ${student.fullname} sẽ bị xóa. Lịch sử điểm danh được giữ lại. Tiếp tục?`)) {
+    await refreshSession();
+    return;
+  }
+  try {
+    await api(`/api/students/${student.id}/consent`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: select.value }),
+    });
+    await refreshSession();
+    if (erases) await refreshAlerts();
+    toast("Đã ghi nhận trạng thái đồng ý");
+  } catch (error) {
+    toast(error.message, true);
+    await refreshSession();
+  }
 }
 
 async function toggleAttendance(studentId, currentlyPresent) {
@@ -734,6 +783,11 @@ async function uploadFace(studentId, blob, filename) {
 }
 
 async function reenrollStudent(studentId) {
+  const student = state.students.find((item) => item.id === studentId);
+  if (student && student.consent_status !== "GRANTED") {
+    toast("Cần ghi nhận đồng ý của phụ huynh trước khi lưu ảnh khuôn mặt", true);
+    return;
+  }
   const blob = await captureCameraBlob();
   if (blob && window.confirm("Chụp ảnh khuôn mặt từ camera đang bật? (Chọn Hủy để tải ảnh từ máy)")) {
     await uploadFace(studentId, blob, "webcam.jpg");
@@ -1010,7 +1064,10 @@ async function registerStudent(event) {
   const data = new FormData(event.target);
   data.set("class_id", state.classId);
   
-  if (!data.get("image").size) {
+  if (!data.has("consent")) {
+    data.delete("image");
+    if (!window.confirm("Chưa có đồng ý của phụ huynh nên hệ thống sẽ không lưu ảnh khuôn mặt. Vẫn đăng ký?")) return;
+  } else if (!data.get("image").size) {
     const blob = await captureCameraBlob();
     if (blob) {
       data.set("image", blob, "webcam.jpg");
@@ -1346,6 +1403,7 @@ $("#toggle-register-button").addEventListener("click", (event) => {
 });
 $("#register-form").addEventListener("submit", registerStudent);
 $("#student-list").addEventListener("click", onStudentListClick);
+$("#student-list").addEventListener("change", onConsentChange);
 $("#export-session-button").addEventListener("click", () => state.session && exportSession(state.session.id));
 $("#history-button").addEventListener("click", showHistory);
 $("#admin-button").addEventListener("click", openAdmin);

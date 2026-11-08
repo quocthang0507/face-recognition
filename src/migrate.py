@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from pathlib import Path
 
 from alembic import command
@@ -50,7 +51,7 @@ def head_revision() -> str:
     return ScriptDirectory.from_config(_config()).get_current_head()
 
 
-def _sqlite_file(bind: Engine) -> Path | None:
+def sqlite_file(bind: Engine) -> Path | None:
     database = bind.url.database
     if (
         bind.url.get_backend_name() != "sqlite"
@@ -78,7 +79,7 @@ def backup_database(bind: Engine, label: str) -> Path | None:
     An existing copy is kept: after a failed upgrade it is the only intact one.
     """
 
-    source_path = _sqlite_file(bind)
+    source_path = sqlite_file(bind)
     if source_path is None:
         return None
     target_path = source_path.with_name(f"{source_path.name}.bak-{label}")
@@ -90,6 +91,22 @@ def backup_database(bind: Engine, label: str) -> Path | None:
     partial_path.replace(target_path)  # only a complete copy gets the final name
     logger.info("Đã sao lưu CSDL trước khi nâng cấp: %s", target_path)
     return target_path
+
+
+def purge_expired_backups(
+    database: Path, retention_days: int, now: float | None = None
+) -> int:
+    """Delete upgrade backups past the retention window; they hold face data."""
+
+    cutoff = (time.time() if now is None else now) - retention_days * 86400
+    expired = [
+        path
+        for path in database.parent.glob(f"{database.name}.bak-*")
+        if path.stat().st_mtime < cutoff
+    ]
+    for path in expired:
+        path.unlink()
+    return len(expired)
 
 
 def _add_pre_alembic_columns(connection: Connection) -> None:

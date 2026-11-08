@@ -16,8 +16,10 @@ from . import cache
 from .auth import hash_password, verify_password
 from .config import settings
 from .models import (
+    AccessLog,
     BehaviorLog,
     ClassroomSession,
+    ConsentEvent,
     SchoolClass,
     SessionStudent,
     Student,
@@ -36,6 +38,11 @@ ROLE_TEACHER = "TEACHER"
 ROLES = (ROLE_ADMIN, ROLE_TEACHER)
 ADMIN_USERNAME = "admin"
 DEFAULT_CLASS_NAME = "Lớp mặc định"
+CONSENT_PENDING = "PENDING"
+CONSENT_GRANTED = "GRANTED"
+CONSENT_REFUSED = "REFUSED"
+CONSENT_WITHDRAWN = "WITHDRAWN"
+RECORDABLE_CONSENT = (CONSENT_GRANTED, CONSENT_REFUSED, CONSENT_WITHDRAWN)
 MIN_PASSWORD_LENGTH = 8
 USERNAME_PATTERN = re.compile(r"[a-z0-9._-]{3,50}")
 # Verified when the username is unknown, so both failures take the same time.
@@ -316,6 +323,11 @@ class StudentService:
             .where(BehaviorLog.student_id == student_id)
             .values(student_id=None)
         )
+        db.execute(
+            update(ConsentEvent)
+            .where(ConsentEvent.student_id == student_id)
+            .values(student_id=None)
+        )
         db.delete(student)
         db.commit()
         cache.bump("students")
@@ -334,6 +346,16 @@ class StudentService:
         return list(db.scalars(query))
 
     @staticmethod
+    def recognizable(db: Session, class_id: int | None = None) -> list[Student]:
+        """Return the students the camera is allowed to identify."""
+
+        return [
+            student
+            for student in StudentService.list_all(db, class_id)
+            if student.consent_status == CONSENT_GRANTED
+        ]
+
+    @staticmethod
     def find_by_code(db: Session, student_code: str) -> Student:
         student = db.scalar(
             select(Student).where(Student.student_code == student_code.strip())
@@ -341,6 +363,86 @@ class StudentService:
         if student is None:
             raise NotFoundError("Không tìm thấy học sinh có mã này")
         return student
+
+
+class ConsentService:
+    """Record biometric consent and erase data when it is not given."""
+
+    @staticmethod
+    def record(
+        db: Session,
+        student_id: int,
+        status: str,
+        user_id: int,
+        storage: PrivateStorage,
+        note: str | None = None,
+    ) -> Student:
+        """Store one decision; refusal or withdrawal erases biometric data."""
+
+        if status not in RECORDABLE_CONSENT:
+            raise DomainError("Trạng thái đồng ý không hợp lệ")
+        normalized_note = " ".join((note or "").split()) or None
+        if normalized_note and len(normalized_note) > 200:
+            raise DomainError("Ghi chú tối đa 200 ký tự")
+        student = StudentService.get(db, student_id)
+        if student.consent_status == status:
+            return student
+
+        avatar = None
+        evidence: list[BehaviorLog] = []
+        if status != CONSENT_GRANTED:
+            avatar = student.avatar_path
+            evidence = ConsentService._evidence_of(db, student_id)
+            student.embedding = serialize_embedding(None)
+            student.embedding_model = None
+            student.avatar_path = None
+        student.consent_status = status
+        db.add(
+            ConsentEvent(
+                student_id=student_id,
+                student_code=student.student_code,
+                status=status,
+                recorded_by=user_id,
+                note=normalized_note,
+            )
+        )
+        db.commit()
+        cache.bump("students")
+        BehaviorLogService._delete_logs(db, storage, evidence)
+        if avatar:
+            storage.delete_avatar(avatar)
+        return student
+
+    @staticmethod
+    def _evidence_of(db: Session, student_id: int) -> list[BehaviorLog]:
+        """Return the student's logs and any others sharing the same image."""
+
+        snapshots = select(BehaviorLog.snapshot_path).where(
+            BehaviorLog.student_id == student_id
+        )
+        return list(
+            db.scalars(select(BehaviorLog).where(BehaviorLog.snapshot_path.in_(snapshots)))
+        )
+
+
+class AccessLogService:
+    """Keep a trail of who opened protected student images."""
+
+    @staticmethod
+    def record(db: Session, user_id: int, action: str, target: str) -> None:
+        db.add(AccessLog(user_id=user_id, action=action, target=target))
+        db.commit()
+
+    @staticmethod
+    def list_recent(db: Session, limit: int = 100) -> list[AccessLog]:
+        return list(
+            db.scalars(
+                select(AccessLog)
+                .options(joinedload(AccessLog.user))
+                .order_by(AccessLog.created_at.desc(), AccessLog.id.desc())
+                .limit(limit)
+            )
+        )
 
 
 class ClassService:

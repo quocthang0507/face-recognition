@@ -130,6 +130,10 @@
                 <span>Ảnh tải lên (không bắt buộc)</span>
                 <input name="image" type="file" accept="image/jpeg,image/png,image/webp" />
               </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="consent" value="true" />
+                <span>Đã có văn bản đồng ý của phụ huynh</span>
+              </label>
               <button class="button secondary full" type="submit">Đăng ký từ camera / ảnh</button>
             </form>
           </article>
@@ -140,12 +144,13 @@
         <article class="surface table-card">
           <div class="section-heading compact">
             <h2>Danh sách lớp</h2>
+            <span id="consent-note" class="table-hint consent-note desk-only"></span>
             <span id="attendance-hint" class="table-hint">Bấm vào trạng thái để điểm danh thủ công</span>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Học sinh</th><th>Mã số</th><th>Điểm danh</th><th>Giờ vào</th><th>Trả bài</th><th class="desk-only">Thao tác</th></tr>
+                <tr><th>Học sinh</th><th>Mã số</th><th>Điểm danh</th><th>Giờ vào</th><th>Trả bài</th><th class="desk-only">Đồng ý</th><th class="desk-only">Thao tác</th></tr>
               </thead>
               <tbody id="student-list"></tbody>
             </table>
@@ -295,6 +300,15 @@
             <button class="button secondary" type="submit">Thêm lớp</button>
           </form>
           <div id="admin-class-list" class="admin-class-list"></div>
+        </section>
+        <section id="admin-access">
+          <h3>Nhật ký xem ảnh</h3>
+          <div class="table-wrap admin-log">
+            <table>
+              <thead><tr><th>Thời gian</th><th>Tài khoản</th><th>Hành động</th></tr></thead>
+              <tbody id="admin-access-list"></tbody>
+            </table>
+          </div>
         </section>
         <button id="close-admin-button" class="button primary full">Đóng</button>
       </div>

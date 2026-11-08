@@ -1,6 +1,6 @@
 # Spec: Lớp học, Tài khoản và Đồng ý dữ liệu sinh trắc
 
-Mục 1 và 2 trong [module-roadmap.md](module-roadmap.md). Trạng thái: **đã duyệt, đang triển khai**.
+Mục 1 và 2 trong [module-roadmap.md](module-roadmap.md). Trạng thái: **đã triển khai**.
 
 ## Mục tiêu
 
@@ -78,8 +78,8 @@ Quyền được kiểm tra ở server. Truy cập lớp không được phân c
 ## Giao diện
 
 - Trang đăng nhập có tên đăng nhập và mật khẩu.
-- Bộ chọn lớp trên thanh đầu trang, ẩn ở chế độ Chiếu TV khi đang có phiên.
-- Trang Quản trị cho tài khoản, lớp và phân công, chỉ hiện với Quản trị.
+- Bộ chọn lớp trên thanh đầu trang, ẩn ở chế độ Chiếu TV.
+- Hộp thoại Quản trị cho tài khoản, lớp, phân công và nhật ký, chỉ hiện với Quản trị.
 - Cột Đồng ý trong Danh sách lớp, chỉ hiện ở chế độ Máy tính GV.
 
 ## Lệnh
@@ -127,12 +127,12 @@ def require_class_access(class_id: int, user: CurrentUser, db: DbSession) -> Non
 
 ## Tiêu chí hoàn thành
 
-- [ ] Giáo viên không đọc hay sửa được dữ liệu lớp không được phân công qua API và WebSocket.
-- [ ] Camera chỉ nhận diện học sinh của lớp đang mở phiên và ở trạng thái `GRANTED`.
-- [ ] Rút đồng ý xóa vector, ảnh đại diện, ảnh bằng chứng, và ghi một `consent_events`.
-- [ ] Mỗi lần xem ảnh bằng chứng tạo một dòng `access_logs`.
-- [ ] Nâng cấp bản sao CSDL thật giữ đủ học sinh, phiên và điểm danh.
-- [ ] `pytest src/tests`, E2E và `alembic check` đều đạt.
+- [x] Giáo viên không đọc hay sửa được dữ liệu lớp không được phân công qua API và WebSocket.
+- [x] Camera chỉ nhận diện học sinh của lớp đang mở phiên và ở trạng thái `GRANTED`.
+- [x] Rút đồng ý xóa vector, ảnh đại diện, ảnh bằng chứng, và ghi một `consent_events`.
+- [x] Mỗi lần xem ảnh bằng chứng tạo một dòng `access_logs`.
+- [x] Nâng cấp bản sao CSDL thật giữ đủ học sinh, phiên và điểm danh.
+- [x] `pytest src/tests`, E2E và `alembic check` đều đạt.
 
 ## Kế hoạch và danh sách việc
 
@@ -140,23 +140,23 @@ Chia thành 3 đợt, mỗi đợt một nhánh và vẫn chạy được độc
 
 **Đợt A: Tài khoản**
 
-- [ ] Bảng `users`, migration `0002`, mã hóa mật khẩu, tạo `admin` đầu tiên khi khởi động.
-- [ ] Token mang `user_id`; đổi đăng nhập; cập nhật fixture E2E.
-- [ ] Trang quản lý tài khoản.
+- [x] Bảng `users`, migration `0002`, mã hóa mật khẩu, tạo `admin` đầu tiên khi khởi động.
+- [x] Token mang `user_id`; đổi đăng nhập; cập nhật fixture E2E.
+- [x] Trang quản lý tài khoản.
 
 **Đợt B: Lớp học**
 
-- [ ] Migration `0003`: `classes`, `class_teachers`, `class_students`, `class_id` cho phiên; chuyển dữ liệu cũ.
-- [ ] Kiểm tra quyền theo lớp ở API và WebSocket.
-- [ ] Giới hạn `Gallery` theo lớp, gồm cả khóa bộ nhớ đệm.
-- [ ] Bộ chọn lớp và trang phân công.
+- [x] Migration `0003`: `classes`, `class_teachers`, `class_students`, `class_id` cho phiên; chuyển dữ liệu cũ.
+- [x] Kiểm tra quyền theo lớp ở API và WebSocket.
+- [x] Giới hạn `Gallery` theo lớp, gồm cả khóa bộ nhớ đệm.
+- [x] Bộ chọn lớp và trang phân công.
 
 **Đợt C: Đồng ý và dấu vết**
 
-- [ ] `consent_status`, `consent_events`, `access_logs`, migration `0004`.
-- [ ] Chặn lưu khuôn mặt và loại khỏi `Gallery` theo trạng thái.
-- [ ] Xóa dữ liệu khi rút đồng ý; dọn file `.bak` quá hạn.
-- [ ] `access_logs` và màn hình xem nhật ký.
+- [x] `consent_status`, `consent_events`, `access_logs`, migration `0004`.
+- [x] Chặn lưu khuôn mặt và loại khỏi `Gallery` theo trạng thái.
+- [x] Xóa dữ liệu khi rút đồng ý; dọn file `.bak` quá hạn.
+- [x] `access_logs` và màn hình xem nhật ký.
 
 ## Rủi ro
 
