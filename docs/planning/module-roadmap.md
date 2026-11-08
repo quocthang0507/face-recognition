@@ -1,8 +1,8 @@
 # Lộ trình mở rộng phân hệ
 
-Tài liệu dành cho người phát triển và người quyết định phạm vi dự án. Đây là
-**đề xuất, chưa triển khai** (lập ngày 08/11/2026). Mỗi phân hệ cần có đặc tả riêng
-trước khi bắt đầu.
+Tài liệu dành cho người phát triển và người quyết định phạm vi dự án. Lập ngày
+08/11/2026. **Mục 3 đã xong**, các mục còn lại là đề xuất. Mỗi phân hệ cần có đặc tả
+riêng trước khi bắt đầu.
 
 Độ lớn là ước lượng tương đối: S (nhỏ), M (vừa), L (lớn).
 
@@ -23,7 +23,7 @@ Repo tích hợp sẵn 4 kỹ năng, dùng theo thứ tự:
 |---|---|---|---|---|
 | 1 | Lớp học và tài khoản | Hiện mọi học sinh chung một danh sách và dùng chung một mật khẩu. Thêm lớp, phiên gắn với lớp, tài khoản giáo viên và phân quyền. | Spec, TDD | L |
 | 2 | Đồng ý và dữ liệu sinh trắc | Ghi nhận đồng ý của phụ huynh, cho rút đồng ý và xóa khuôn mặt, học sinh không đồng ý thì điểm danh tay, lưu vết ai đã xem ảnh bằng chứng. | Spec, Review | M |
-| 3 | Kiểm thử giao diện và migration | Đưa kịch bản Playwright vào repo vì `pytest` chưa kiểm tra UI. Chuyển sang Alembic trước khi đổi CSDL ở mục 1. | TDD | S |
+| 3 | Kiểm thử giao diện và migration ([đã xong](spec-e2e-alembic.md)) | Đưa kịch bản Playwright vào repo vì `pytest` chưa kiểm tra UI. Chuyển sang Alembic trước khi đổi CSDL ở mục 1. | TDD | S |
 
 ## Đợt 2: Nâng chất lượng nghiệp vụ
 
@@ -45,7 +45,7 @@ Repo tích hợp sẵn 4 kỹ năng, dùng theo thứ tự:
 
 ## Thứ tự khuyến nghị
 
-Bắt đầu từ **mục 3**, sau đó làm **mục 1 và 2 cùng nhau**. Lớp và tài khoản là nền
+Tiếp theo làm **mục 1 và 2 cùng nhau**. Lớp và tài khoản là nền
 cho hầu hết phân hệ còn lại. Đồng ý nên có từ đầu vì thêm sau sẽ phải rà lại dữ liệu
 đã thu.
 

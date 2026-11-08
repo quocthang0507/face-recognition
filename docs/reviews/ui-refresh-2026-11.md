@@ -75,13 +75,12 @@ trang được vẽ. `applyDisplay()` trong `app.js` xử lý việc chuyển ch
 
 ## 5. Phạm vi đã kiểm thử
 
-Đã chạy một kịch bản Playwright với cửa sổ Chromium, camera giả và dữ liệu test
-riêng, qua các luồng: đăng nhập, đăng ký, phiên học, điểm danh thủ công, gọi ngẫu
+Đã chạy kịch bản Playwright với Chromium, camera giả và dữ liệu test riêng, qua các luồng: đăng nhập, đăng ký, phiên học, điểm danh thủ công, gọi ngẫu
 nhiên, xuất CSV, cài đặt, camera và WebSocket, xóa học sinh, tổng kết, lịch sử,
-đăng xuất, bố cục ở 1440, 768, 375px, cùng hai chế độ hiển thị. Kịch bản này là
-công cụ tạm, **chưa được đưa vào repo**.
+đăng xuất, bố cục ở 1440, 768, 375px, cùng hai chế độ hiển thị. Kịch bản này nay
+nằm ở `src/tests/e2e`, chạy bằng `pytest src/tests/e2e -m e2e`.
 
-`pytest src/tests` không kiểm tra giao diện. Các mục cần người và camera thật nằm
+Lệnh mặc định `pytest src/tests` bỏ qua nhóm này. Các mục cần người và camera thật nằm
 ở [mục 5 của manual-verification.md](../guides/manual-verification.md#5-chế-độ-hiển-thị).
 
 **Chưa kiểm thử:** nhận diện khuôn mặt thật, hiển thị thực tế trên TV hoặc máy

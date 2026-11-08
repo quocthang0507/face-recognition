@@ -68,6 +68,8 @@ Toàn bộ mã nguồn cốt lõi của ứng dụng được tổ chức tập 
 │   ├── face_engine.py    # Module xử lý nhận diện khuôn mặt
 │   ├── behavior_engine.py# Module phân tích hành vi học sinh bằng MediaPipe
 │   ├── main.py           # API FastAPI & WebSocket Server xử lý frame video
+│   ├── migrate.py        # Nâng cấp CSDL khi khởi động, sao lưu trước khi nâng cấp
+│   ├── migrations/       # Các phiên bản lược đồ CSDL (Alembic)
 │   ├── static/           # Tài nguyên tĩnh phục vụ cho Frontend
 │   │   ├── css/
 │   │   │   └── style.css # CSS Giao diện Dashboard tối giản, hiện đại
@@ -142,6 +144,16 @@ pytest src/tests
 black --check src
 flake8 src
 ```
+
+Kiểm thử giao diện trên trình duyệt thật (không cần khi chỉ chạy ứng dụng):
+```bash
+pip install -r requirements-e2e.txt
+playwright install chromium
+pytest src/tests/e2e -m e2e
+```
+Đặt `E2E_HEADED=1` để xem cửa sổ trình duyệt. Mỗi lần chạy dùng server và dữ liệu tạm riêng, không ảnh hưởng `src/data`.
+
+Khi đổi `src/models.py`, tạo migration mới bằng `alembic revision --autogenerate -m "mo ta"`. Server tự nâng cấp CSDL khi khởi động và tạo bản sao `classroom.db.bak-<revision>` trong thư mục dữ liệu trước khi nâng cấp.
 
 ### 5. Triển khai production
 Đặt ứng dụng sau reverse proxy HTTPS, sau đó bật cookie bảo mật và bắt buộc HTTPS/WSS:

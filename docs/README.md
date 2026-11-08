@@ -14,7 +14,8 @@ Mục lục toàn bộ tài liệu. Hướng dẫn cài đặt và chạy ứng 
 
 | Tài liệu | Nội dung | Trạng thái |
 |---|---|---|
-| [module-roadmap.md](planning/module-roadmap.md) | Lộ trình mở rộng phân hệ, chức năng | Đề xuất, chưa triển khai |
+| [module-roadmap.md](planning/module-roadmap.md) | Lộ trình mở rộng phân hệ, chức năng | Xong mục 3, các mục khác là đề xuất |
+| [spec-e2e-alembic.md](planning/spec-e2e-alembic.md) | Đặc tả kiểm thử giao diện và migration CSDL | Đã triển khai |
 | [architecture-proposal.md](planning/architecture-proposal.md) | Nâng cấp kiến trúc, tối ưu hiệu năng | Xong giai đoạn 0–1, còn giai đoạn 2–3 |
 | [check-list.md](planning/check-list.md) | Danh sách kiểm tra tiến độ và chất lượng | Đang theo dõi |
 | [implementation-plan.md](planning/implementation-plan.md) | Kế hoạch triển khai ban đầu | Lưu trữ, một số mô tả giao diện đã cũ |
