@@ -15,6 +15,7 @@ Mục lục toàn bộ tài liệu. Hướng dẫn cài đặt và chạy ứng 
 | Tài liệu | Nội dung | Trạng thái |
 |---|---|---|
 | [module-roadmap.md](planning/module-roadmap.md) | Lộ trình mở rộng phân hệ, chức năng | Xong mục 3, các mục khác là đề xuất |
+| [spec-classes-accounts-consent.md](planning/spec-classes-accounts-consent.md) | Đặc tả lớp học, tài khoản và đồng ý dữ liệu sinh trắc | Đang triển khai |
 | [spec-e2e-alembic.md](planning/spec-e2e-alembic.md) | Đặc tả kiểm thử giao diện và migration CSDL | Đã triển khai |
 | [architecture-proposal.md](planning/architecture-proposal.md) | Nâng cấp kiến trúc, tối ưu hiệu năng | Xong giai đoạn 0–1, còn giai đoạn 2–3 |
 | [check-list.md](planning/check-list.md) | Danh sách kiểm tra tiến độ và chất lượng | Đang theo dõi |
