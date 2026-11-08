@@ -92,7 +92,7 @@ Tài liệu này dùng để theo dõi tiến độ thực hiện và kiểm so�
 
 ## 🧪 7. Kiểm thử & Nghiệm thu (Verification)
 - [x] Chạy unit test (`pytest`) kiểm tra các hàm xử lý hình học hành vi, token và API.
-- [ ] Kiểm thử thủ công (Xem [manual-verification.md](manual-verification.md)):
+- [ ] Kiểm thử thủ công (Xem [manual-verification.md](../guides/manual-verification.md)):
     - [ ] Thử nghiệm đăng ký 3 học sinh mẫu với các góc mặt khác nhau.
     - [ ] Kiểm tra nhận dạng khuôn mặt và điểm danh chính xác khi học sinh ngồi trước webcam.
     - [ ] Thử nghiệm gọi học sinh ngẫu nhiên 3-5 lần liên tiếp để đảm bảo không bị trùng lặp và reset hoạt động bình thường.
@@ -122,5 +122,5 @@ Tài liệu này dùng để theo dõi tiến độ thực hiện và kiểm so�
 - [x] Triển khai logic điều chỉnh lại tần suất gửi khung hình camera trực tiếp mà không cần khởi động lại kết nối.
 - [x] Xây dựng Hộp thoại Cài đặt Tập trung (Settings Modal) quản lý nguồn camera, FPS, theme sáng/tối và âm thanh/TTS giọng nói tiếng Việt ở một nơi.
 - [x] Tích hợp bộ chọn giọng đọc TTS (Voice Selector) tiếng Việt/hệ thống, lưu trữ lựa chọn vào `localStorage` và tự động cập nhật giọng đọc khi giáo viên lựa chọn.
-- [x] Tinh chỉnh giao diện cho lớp học: nền đặc, tương phản cao, nút có icon, trạng thái trống có hướng dẫn (Xem [ui-refresh-2026-11.md](ui-refresh-2026-11.md)).
-- [x] Thêm 2 chế độ hiển thị `Máy tính GV` và `Chiếu TV`, che tên học sinh trong cảnh báo khi chiếu (Xem [display-modes.md](display-modes.md)).
+- [x] Tinh chỉnh giao diện cho lớp học: nền đặc, tương phản cao, nút có icon, trạng thái trống có hướng dẫn (Xem [ui-refresh-2026-11.md](../reviews/ui-refresh-2026-11.md)).
+- [x] Thêm 2 chế độ hiển thị `Máy tính GV` và `Chiếu TV`, che tên học sinh trong cảnh báo khi chiếu (Xem [display-modes.md](../guides/display-modes.md)).

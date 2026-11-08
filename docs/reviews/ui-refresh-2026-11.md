@@ -2,7 +2,7 @@
 
 Tài liệu dành cho người phát triển: những gì đã đổi trên giao diện, quy ước cần
 giữ khi sửa tiếp, và phạm vi đã kiểm thử. Hướng dẫn cho giáo viên nằm ở
-[display-modes.md](display-modes.md).
+[display-modes.md](../guides/display-modes.md).
 
 Phạm vi là tinh chỉnh giao diện hiện có. API, WebSocket và cơ sở dữ liệu không
 đổi. Thay đổi nằm trong `src/templates/index.html`, `src/static/css/style.css` và
@@ -82,7 +82,7 @@ nhiên, xuất CSV, cài đặt, camera và WebSocket, xóa học sinh, tổng k
 công cụ tạm, **chưa được đưa vào repo**.
 
 `pytest src/tests` không kiểm tra giao diện. Các mục cần người và camera thật nằm
-ở [mục 5 của manual-verification.md](manual-verification.md#5-chế-độ-hiển-thị).
+ở [mục 5 của manual-verification.md](../guides/manual-verification.md#5-chế-độ-hiển-thị).
 
 **Chưa kiểm thử:** nhận diện khuôn mặt thật, hiển thị thực tế trên TV hoặc máy
 chiếu, âm thanh và giọng đọc.

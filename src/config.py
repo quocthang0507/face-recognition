@@ -81,7 +81,7 @@ class Settings:
         default_factory=lambda: _as_int("FACE_APP_LATE_AFTER_MINUTES", 15)
     )
     duplicate_face_confidence: float = 90.0
-    # Performance tuning (phase 1 of docs/architecture-proposal.md).
+    # Performance tuning (phase 1 of docs/planning/architecture-proposal.md).
     behavior_fps: float = field(
         default_factory=lambda: _as_float("FACE_APP_BEHAVIOR_FPS", 8.0)
     )

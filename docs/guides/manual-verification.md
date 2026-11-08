@@ -1,7 +1,7 @@
 # Nghiệm thu Thủ công bằng Webcam
 
 Các bước này cần webcam và người thật trước camera. Chỉ đánh dấu các mục manual
-trong `check-list.md` sau khi đã quan sát kết quả thực tế.
+trong [check-list.md](../planning/check-list.md) sau khi đã quan sát kết quả thực tế.
 
 ## 1. Chuẩn bị
 

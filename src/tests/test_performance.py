@@ -1,4 +1,4 @@
-"""Tests for the phase-1 performance changes (docs/architecture-proposal.md)."""
+"""Tests for the phase-1 performance changes (docs/planning/architecture-proposal.md)."""
 
 import sys
 import types

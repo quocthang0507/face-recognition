@@ -13,8 +13,8 @@ Hệ thống ứng dụng Trí tuệ Nhân tạo (AI) và Thị giác Máy tính
     *   Giáo viên **điểm danh thủ công** / đánh dấu vắng kèm lý do; camera không ghi đè quyết định thủ công.
     *   Đặt tên buổi học, xem **tổng kết khi kết thúc phiên**, **lịch sử phiên** và **xuất bảng điểm danh CSV** (mở được bằng Excel).
     *   Cập nhật ảnh khuôn mặt, xóa học sinh, chặn đăng ký trùng khuôn mặt, cảnh báo học sinh chưa có ảnh.
-    *   Chi tiết rà soát và quy trình: [docs/review-2026-11.md](docs/review-2026-11.md).
-    *   Đề xuất nâng cấp kiến trúc hiệu năng: [docs/architecture-proposal.md](docs/architecture-proposal.md).
+    *   Chi tiết rà soát và quy trình: [docs/reviews/review-2026-11.md](docs/reviews/review-2026-11.md).
+    *   Đề xuất nâng cấp kiến trúc hiệu năng: [docs/planning/architecture-proposal.md](docs/planning/architecture-proposal.md).
 *   **Quản lý phiên gọi ngẫu nhiên (Random Student Picker)**:
     *   Hỗ trợ giáo viên chọn ngẫu nhiên một học sinh trong danh sách những người có mặt để trả bài (không gọi học sinh vắng).
     *   Tự động lưu trạng thái đã gọi/chưa gọi trong phiên học hiện tại để tránh trùng lặp.
@@ -35,8 +35,8 @@ Hệ thống ứng dụng Trí tuệ Nhân tạo (AI) và Thị giác Máy tính
     - FastAPI tự động nạp trước (preload) các mô hình DeepFace và MediaPipe khi khởi chạy máy chủ (lifespan), giúp bật camera lên là có hình ảnh phân tích ngay lập tức.
 *   **Hộp thoại Cài đặt Tập trung (Settings Modal)**: Tích hợp cấu hình chọn nguồn camera (Hot-swapping), tần suất gửi khung hình (FPS), bật/tắt âm thanh/giọng nói cảnh báo, **tùy chọn bộ lọc giọng đọc TTS hệ thống** và chuyển đổi giao diện sáng/tối vào một cửa sổ popup duy nhất để làm gọn Dashboard.
 *   **Giao diện Dashboard hiện đại**:
-    *   **2 chế độ hiển thị**: **Máy tính GV** đầy đủ công cụ và **Chiếu TV** chữ lớn, ẩn công cụ quản trị, che tên học sinh trong cảnh báo. Xem [docs/display-modes.md](docs/display-modes.md).
-    *   Giao diện sáng/tối nền đặc, tương phản cao, tự động ghi nhớ tùy chọn trên trình duyệt. Quy ước thiết kế: [docs/ui-refresh-2026-11.md](docs/ui-refresh-2026-11.md).
+    *   **2 chế độ hiển thị**: **Máy tính GV** đầy đủ công cụ và **Chiếu TV** chữ lớn, ẩn công cụ quản trị, che tên học sinh trong cảnh báo. Xem [docs/guides/display-modes.md](docs/guides/display-modes.md).
+    *   Giao diện sáng/tối nền đặc, tương phản cao, tự động ghi nhớ tùy chọn trên trình duyệt. Quy ước thiết kế: [docs/reviews/ui-refresh-2026-11.md](docs/reviews/ui-refresh-2026-11.md).
     *   Có nút xóa audit trail kèm snapshot bằng chứng sau bước xác nhận.
     *   Hiển thị live stream video vẽ kèm bounding box, landmarks và các cảnh báo thời gian thực.
     *   Sidebar thống kê nhanh và quản lý danh sách học sinh.
@@ -76,8 +76,10 @@ Toàn bộ mã nguồn cốt lõi của ứng dụng được tổ chức tập 
 │   └── templates/
 │       └── index.html    # Trang giao diện chính của Giáo viên
 ├── docs/
-│   ├── implementation-plan.md # Tài liệu kế hoạch triển khai chi tiết
-│   └── check-list.md          # Tài liệu danh sách kiểm tra tiến độ dự án
+│   ├── README.md              # Mục lục toàn bộ tài liệu
+│   ├── guides/                # Hướng dẫn sử dụng và nghiệm thu
+│   ├── planning/              # Kế hoạch, kiến trúc và lộ trình
+│   └── reviews/               # Ghi chép theo từng đợt thay đổi
 ├── .gitignore            # Cấu hình bỏ qua các file thừa khi dùng Git
 ├── LICENSE               # Giấy phép phần mềm (MIT License)
 └── requirements.txt      # Danh sách các thư viện phụ thuộc
@@ -152,7 +154,7 @@ export FACE_APP_ALLOWED_ORIGINS='https://classroom.example.com'
 Avatar được mã hóa lưu trữ trên đĩa. Snapshot cảnh báo chỉ được truy cập qua API đã xác thực và tự động được xóa cùng log cũ sau 30 ngày khi ứng dụng khởi động, sau đó tiếp tục được dọn định kỳ mỗi 24 giờ.
 
 ### 6. Nghiệm thu webcam
-Quy trình nghiệm thu với người thật và công cụ preview chỉ số hành vi được mô tả trong [docs/manual-verification.md](docs/manual-verification.md):
+Quy trình nghiệm thu với người thật và công cụ preview chỉ số hành vi được mô tả trong [docs/guides/manual-verification.md](docs/guides/manual-verification.md):
 ```bash
 python -m src.manual_verification
 ```
@@ -162,7 +164,7 @@ Chạy pipeline với video mẫu (trên bản sao dữ liệu, không ảnh hư
 ```bash
 python -m src.benchmark --video lop_mau.mp4 --session --data-dir src/data
 ```
-Bật `FACE_APP_PROFILE=true` để mỗi khung WebSocket kèm thời gian xử lý từng bước. Các biến tinh chỉnh (`FACE_APP_BEHAVIOR_FPS`, `FACE_APP_HAND_FPS`, `FACE_APP_MAX_FACES`, `FACE_APP_EMBED_DETECTOR`) được mô tả trong [docs/architecture-proposal.md](docs/architecture-proposal.md). Thêm `?overlay=server` vào địa chỉ Dashboard để quay lại chế độ máy chủ vẽ khung hình (gỡ lỗi).
+Bật `FACE_APP_PROFILE=true` để mỗi khung WebSocket kèm thời gian xử lý từng bước. Các biến tinh chỉnh (`FACE_APP_BEHAVIOR_FPS`, `FACE_APP_HAND_FPS`, `FACE_APP_MAX_FACES`, `FACE_APP_EMBED_DETECTOR`) được mô tả trong [docs/planning/architecture-proposal.md](docs/planning/architecture-proposal.md). Thêm `?overlay=server` vào địa chỉ Dashboard để quay lại chế độ máy chủ vẽ khung hình (gỡ lỗi).
 
 ### 8. Log MediaPipe trên Terminal
 Khi bật camera, MediaPipe có thể ghi các dòng khởi tạo native như:
