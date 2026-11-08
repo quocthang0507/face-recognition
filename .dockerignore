@@ -1,0 +1,17 @@
+.git
+.venv
+venv
+.env
+.vscode
+.claude
+.agent
+.agents
+.gemini
+.impeccable
+docs
+models
+**/__pycache__
+.pytest_cache
+src/data
+src/data-test
+src/tests

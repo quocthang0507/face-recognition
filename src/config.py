@@ -31,6 +31,9 @@ def _as_float(name: str, default: float) -> float:
 class Settings:
     """Runtime settings for the classroom application."""
 
+    environment: str = field(
+        default_factory=lambda: os.getenv("FACE_APP_ENV", "development")
+    )
     data_dir: Path = field(
         default_factory=lambda: Path(
             os.getenv("FACE_APP_DATA_DIR", str(BASE_DIR / "data"))
@@ -119,6 +122,15 @@ class Settings:
             self.teacher_password == "change-me"
             or self.token_secret == "development-only-change-this-secret"
         )
+
+    def check_safe_to_start(self) -> None:
+        """Refuse a production start with the credentials published in the repo."""
+
+        if self.environment == "production" and self.uses_default_credentials:
+            raise RuntimeError(
+                "Hãy đặt FACE_APP_TEACHER_PASSWORD và FACE_APP_TOKEN_SECRET "
+                "trước khi chạy ở môi trường production"
+            )
 
     @property
     def avatar_dir(self) -> Path:

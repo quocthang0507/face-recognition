@@ -164,6 +164,10 @@ pytest src/tests/e2e -m e2e
 Khi đổi `src/models.py`, tạo migration mới bằng `alembic revision --autogenerate -m "mo ta"`. Server tự nâng cấp CSDL khi khởi động và tạo bản sao `classroom.db.bak-<revision>` trong thư mục dữ liệu trước khi nâng cấp.
 
 ### 5. Triển khai production
+Xem hướng dẫn đầy đủ tại [docs/guides/deployment.md](docs/guides/deployment.md): Docker kèm HTTPS, cài trên máy khác và chuyển dữ liệu. Cách nhanh nhất là `docker compose up -d --build` sau khi điền file `.env`.
+
+Nếu tự cấu hình reverse proxy:
+
 Đặt ứng dụng sau reverse proxy HTTPS, sau đó bật cookie bảo mật và bắt buộc HTTPS/WSS:
 ```bash
 export FACE_APP_SECURE_COOKIE=true

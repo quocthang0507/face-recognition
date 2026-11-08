@@ -217,6 +217,7 @@ def _preload_models() -> None:
 async def lifespan(_: FastAPI):
     """Initialize tables and retention cleanup at application startup."""
 
+    settings.check_safe_to_start()
     create_tables()
     with SessionLocal() as db:
         UserService.ensure_admin(db, settings.teacher_password)

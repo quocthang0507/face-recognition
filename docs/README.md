@@ -8,6 +8,7 @@ Mục lục toàn bộ tài liệu. Hướng dẫn cài đặt và chạy ứng 
 | Tài liệu | Nội dung | Dành cho |
 |---|---|---|
 | [accounts-classes-consent.md](guides/accounts-classes-consent.md) | Tài khoản, lớp học và ghi nhận đồng ý của phụ huynh | Quản trị, Giáo viên |
+| [deployment.md](guides/deployment.md) | Triển khai trên máy khác hoặc hosting, chuyển dữ liệu, vận hành | Người cài đặt |
 | [display-modes.md](guides/display-modes.md) | Dùng chế độ Máy tính GV và Chiếu TV, quyền riêng tư khi chiếu | Giáo viên |
 | [manual-verification.md](guides/manual-verification.md) | Các bước nghiệm thu với webcam và người thật | Người kiểm thử |
 

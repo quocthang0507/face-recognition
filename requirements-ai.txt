@@ -1,3 +1,5 @@
 -r requirements.txt
 deepface>=0.0.93,<1
+tensorflow>=2.16,<2.20
+tf-keras>=2.16,<2.20
 piper-tts>=1.8,<2

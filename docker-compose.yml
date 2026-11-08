@@ -1,0 +1,37 @@
+# Production deployment with automatic HTTPS. Browsers only allow camera access
+# over HTTPS, so the application is reachable through Caddy only.
+# Copy .env.example to .env and fill in the values before starting.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      FACE_APP_TEACHER_PASSWORD: ${FACE_APP_TEACHER_PASSWORD:?Set FACE_APP_TEACHER_PASSWORD in .env}
+      FACE_APP_TOKEN_SECRET: ${FACE_APP_TOKEN_SECRET:?Set FACE_APP_TOKEN_SECRET in .env}
+      FACE_APP_SECURE_COOKIE: "true"
+      FACE_APP_SECURE_TRANSPORT_ONLY: "true"
+      FACE_APP_ALLOWED_ORIGINS: https://${FACE_APP_DOMAIN:?Set FACE_APP_DOMAIN in .env}
+      # Only Caddy can reach this container, so its forwarded client IP is trusted.
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - classroom-data:/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${FACE_APP_DOMAIN} --to app:8000
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  classroom-data:
+  caddy-data:
+  caddy-config:
