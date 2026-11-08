@@ -10,10 +10,11 @@ PICK_TIMEOUT_MS = 15000
 def seed_students(page, *students: tuple[str, str]) -> None:
     """Create students without photos through the API and reload the roster."""
 
+    class_id = page.evaluate("state.classId")
     for code, name in students:
         response = page.request.post(
             "/api/students/register",
-            multipart={"student_code": code, "fullname": name},
+            multipart={"student_code": code, "fullname": name, "class_id": class_id},
         )
         assert response.ok, response.text()
     reload_dashboard(page)

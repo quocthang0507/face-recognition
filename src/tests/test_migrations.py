@@ -223,3 +223,25 @@ def test_adopted_first_release_database_matches_models(engine: Engine) -> None:
         differences = compare_metadata(context, Base.metadata)
 
     assert differences == []
+
+
+def test_existing_records_move_to_a_default_class(engine: Engine) -> None:
+    with engine.begin() as connection:
+        command.upgrade(migrate._config(connection), "0002")
+        connection.execute(INSERT_STUDENT)
+        connection.execute(
+            text(
+                "INSERT INTO sessions (created_at, status) "
+                "VALUES ('2026-01-01 00:00:00', 'FINISHED')"
+            )
+        )
+
+    upgrade_database(engine)
+
+    with engine.connect() as connection:
+        class_ids = list(connection.scalars(text("SELECT id FROM classes")))
+        members = list(connection.scalars(text("SELECT class_id FROM class_students")))
+        lessons = list(connection.scalars(text("SELECT class_id FROM sessions")))
+    assert len(class_ids) == 1
+    assert members == class_ids
+    assert lessons == class_ids

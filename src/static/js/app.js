@@ -3,6 +3,8 @@ const state = {
   socket: null,
   session: null,
   students: [],
+  classes: [],
+  classId: null,
   alerts: [],
   waitingFrame: false,
   cameraTimer: null,
@@ -100,6 +102,7 @@ const ROLE_TEXT = { ADMIN: "Quản trị", TEACHER: "Giáo viên" };
 
 async function refreshUsers() {
   const users = await api("/api/users");
+  state.users = users;
   $("#admin-users").innerHTML = users.map((user) => `
     <tr>
       <td>${escapeHtml(user.username)}</td>
@@ -123,6 +126,74 @@ async function openAdmin() {
 
 async function refreshAdmin() {
   await refreshUsers();
+  await refreshClasses();
+  const teachers = state.users.filter((user) => user.role === "TEACHER" && user.is_active);
+  $("#admin-class-list").innerHTML = state.classes.map((item) => `
+    <article class="admin-class" data-class-row="${item.id}">
+      <header>
+        <span>${escapeHtml(item.name)}${item.school_year ? ` · ${escapeHtml(item.school_year)}` : ""}</span>
+        <span>${item.student_count} học sinh</span>
+      </header>
+      <div class="admin-class-teachers">
+        ${teachers.map((teacher) => `
+          <label class="checkbox-label">
+            <input type="checkbox" data-class-teacher="${item.id}" value="${teacher.id}" ${item.teacher_ids.includes(teacher.id) ? "checked" : ""} />
+            <span>${escapeHtml(teacher.fullname)}</span>
+          </label>
+        `).join("") || "<span>Chưa có tài khoản giáo viên.</span>"}
+      </div>
+      <form class="add-student-form" data-class-add="${item.id}">
+        <input aria-label="Mã học sinh" placeholder="Mã học sinh có sẵn" maxlength="20" required />
+        <button class="button ghost" type="submit">Thêm vào lớp</button>
+      </form>
+    </article>
+  `).join("");
+}
+
+async function createClass(event) {
+  event.preventDefault();
+  try {
+    await api("/api/classes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: $("#new-class-name").value,
+        school_year: $("#new-class-year").value || null,
+      }),
+    });
+    event.target.reset();
+    await refreshAdmin();
+    toast("Đã thêm lớp");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function onClassTeacherChange(event) {
+  const box = event.target.closest("[data-class-teacher]");
+  if (!box) return;
+  try {
+    await api(`/api/classes/${box.dataset.classTeacher}/teachers/${box.value}`, {
+      method: box.checked ? "PUT" : "DELETE",
+    });
+  } catch (error) {
+    box.checked = !box.checked;
+    toast(error.message, true);
+  }
+}
+
+async function onAddStudentToClass(event) {
+  const form = event.target.closest("[data-class-add]");
+  if (!form) return;
+  event.preventDefault();
+  try {
+    await api(`/api/classes/${form.dataset.classAdd}/students`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ student_code: form.querySelector("input").value }),
+    });
+    await refreshAdmin();
+    await refreshSession();
+    toast("Đã thêm học sinh vào lớp");
+  } catch (error) { toast(error.message, true); }
 }
 
 async function createUser(event) {
@@ -196,6 +267,10 @@ async function onVideoSourceChange() {
 
 async function startCamera() {
   if (state.stream) return;
+  if (!state.classId) {
+    toast("Hãy chọn lớp trước khi bật camera", true);
+    return;
+  }
   try {
     const select = $("#video-source-select-modal");
     const deviceId = select ? select.value : "";
@@ -253,8 +328,9 @@ function stopCamera() {
 function connectSocket() {
   if (!state.stream) return;
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const query = SERVER_OVERLAY ? "?overlay=server" : "";
-  state.socket = new WebSocket(`${protocol}://${location.host}/ws${query}`);
+  const params = new URLSearchParams({ class_id: state.classId });
+  if (SERVER_OVERLAY) params.set("overlay", "server");
+  state.socket = new WebSocket(`${protocol}://${location.host}/ws?${params}`);
   state.socket.binaryType = "arraybuffer";
   state.socket.onopen = () => {
     setSocketStatus(true);
@@ -485,7 +561,30 @@ function setSocketStatus(online) {
 }
 
 async function refreshDashboard() {
+  await refreshClasses();
   await Promise.all([refreshSession(), refreshAlerts()]);
+}
+
+const CLASS_STORAGE_KEY = "smart-classroom-class";
+
+async function refreshClasses() {
+  state.classes = await api("/api/classes");
+  const saved = Number(state.classId || localStorage.getItem(CLASS_STORAGE_KEY));
+  const current = state.classes.find((item) => item.id === saved) || state.classes[0];
+  state.classId = current ? current.id : null;
+  $("#class-select").innerHTML = state.classes.map((item) => `
+    <option value="${item.id}" ${item.id === state.classId ? "selected" : ""}>${escapeHtml(item.name)}</option>
+  `).join("");
+}
+
+async function onClassChange(event) {
+  state.classId = Number(event.target.value);
+  localStorage.setItem(CLASS_STORAGE_KEY, String(state.classId));
+  const streaming = Boolean(state.stream);
+  if (streaming) stopCamera();
+  state.session = null;
+  await Promise.all([refreshSession(), refreshAlerts()]);
+  if (streaming) await startCamera();
 }
 
 async function refreshSession() {
@@ -496,8 +595,13 @@ async function refreshSession() {
   state.refreshingSession = true;
   try {
     const previousId = state.session ? state.session.id : null;
-    state.session = await api("/api/sessions/active");
-    state.students = state.session ? state.session.students : await api("/api/students");
+    if (state.classId) {
+      state.session = await api(`/api/sessions/active?class_id=${state.classId}`);
+      state.students = state.session ? state.session.students : await api(`/api/students?class_id=${state.classId}`);
+    } else {
+      state.session = null;
+      state.students = [];
+    }
     renderSession();
     if ((state.session ? state.session.id : null) !== previousId) refreshAlerts();
   } catch (error) {
@@ -579,7 +683,7 @@ function renderSession() {
         <button type="button" class="button danger" data-delete="${student.id}" title="Xóa học sinh">Xóa</button>
       </div></td>
     </tr>
-  `).join("") || '<tr><td colspan="6" class="empty-row">Chưa có học sinh. Bấm nút + ở mục Đăng ký học sinh để thêm.</td></tr>';
+  `).join("") || `<tr><td colspan="6" class="empty-row">${state.classId ? "Chưa có học sinh. Bấm nút + ở mục Đăng ký học sinh để thêm." : "Bạn chưa được phân công lớp nào. Hãy liên hệ Quản trị."}</td></tr>`;
 }
 
 async function toggleAttendance(studentId, currentlyPresent) {
@@ -605,7 +709,7 @@ async function deleteStudent(studentId) {
   const name = student ? student.fullname : "học sinh này";
   if (!window.confirm(`Xóa ${name}? Ảnh khuôn mặt và lịch sử điểm danh của học sinh sẽ bị xóa.`)) return;
   try {
-    await api(`/api/students/${studentId}`, { method: "DELETE" });
+    await api(`/api/students/${studentId}?class_id=${state.classId}`, { method: "DELETE" });
     await refreshSession();
     toast(`Đã xóa ${name}`);
   } catch (error) { toast(error.message, true); }
@@ -691,7 +795,7 @@ async function showSessionReport(sessionId) {
 
 async function showHistory() {
   try {
-    const sessions = await api("/api/sessions?limit=30");
+    const sessions = await api(`/api/sessions?limit=30&class_id=${state.classId}`);
     $("#report-title").textContent = "Các phiên học gần đây";
     $("#report-body").innerHTML = sessions.map((item) => `
       <div class="history-item">
@@ -725,7 +829,7 @@ async function createSession() {
   state.session = await api("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: title || null }),
+    body: JSON.stringify({ class_id: state.classId, title: title || null }),
   });
   state.students = state.session.students;
   renderSession();
@@ -904,6 +1008,7 @@ async function resetCalled() {
 async function registerStudent(event) {
   event.preventDefault();
   const data = new FormData(event.target);
+  data.set("class_id", state.classId);
   
   if (!data.get("image").size) {
     const blob = await captureCameraBlob();
@@ -926,8 +1031,13 @@ async function registerStudent(event) {
 
 async function refreshAlerts() {
   try {
-    const query = state.session ? `?session_id=${state.session.id}` : "";
-    state.alerts = await api(`/api/behaviors${query}`);
+    if (!state.classId) {
+      state.alerts = [];
+      renderAlerts();
+      return;
+    }
+    const query = state.session ? `session_id=${state.session.id}` : `class_id=${state.classId}`;
+    state.alerts = await api(`/api/behaviors?${query}`);
     renderAlerts();
   } catch (error) {
     if (!error.message.includes("hết hạn")) toast(error.message, true);
@@ -1191,9 +1301,9 @@ function renderAlerts() {
 
 async function clearAlerts() {
   if (!state.alerts.length) return;
-  if (!window.confirm("Xóa toàn bộ audit trail và ảnh bằng chứng đã lưu?")) return;
+  if (!window.confirm("Xóa nhật ký cảnh báo và ảnh bằng chứng của lớp này?")) return;
   try {
-    const result = await api("/api/behaviors", { method: "DELETE" });
+    const result = await api(`/api/behaviors?class_id=${state.classId}`, { method: "DELETE" });
     state.alerts = [];
     if (state.session && state.session.summary) state.session.summary.behaviors = 0;
     renderAlerts();
@@ -1242,6 +1352,10 @@ $("#admin-button").addEventListener("click", openAdmin);
 $("#close-admin-button").addEventListener("click", () => $("#admin-modal").classList.remove("visible"));
 $("#new-user-form").addEventListener("submit", createUser);
 $("#admin-users").addEventListener("click", onAdminUsersClick);
+$("#new-class-form").addEventListener("submit", createClass);
+$("#admin-class-list").addEventListener("change", onClassTeacherChange);
+$("#admin-class-list").addEventListener("submit", onAddStudentToClass);
+$("#class-select").addEventListener("change", onClassChange);
 $("#report-body").addEventListener("click", onReportClick);
 $("#close-report-button").addEventListener("click", () => $("#report-modal").classList.remove("visible"));
 $("#reenroll-input").addEventListener("change", (event) => {

@@ -157,8 +157,7 @@ def anonymous_page(context, prompt_answer: dict[str, str]) -> Iterator:
 
 
 def _reset_application(request) -> None:
-    active = request.get("/api/sessions/active").json()
-    if active:
+    while active := request.get("/api/sessions/active").json():
         request.post(f"/api/sessions/{active['id']}/finish")
     for student in request.get("/api/students").json():
         request.delete(f"/api/students/{student['id']}")

@@ -45,9 +45,19 @@ from .face_engine import (
     FaceRecognitionEngine,
     find_similar_student,
 )
-from .models import ClassroomSession, SessionStudent, Student, User, as_utc, iso_utc
+from .models import (
+    BehaviorLog,
+    ClassroomSession,
+    SchoolClass,
+    SessionStudent,
+    Student,
+    User,
+    as_utc,
+    iso_utc,
+)
 from .services import (
     BehaviorLogService,
+    ClassService,
     ClassroomService,
     DomainError,
     NotFoundError,
@@ -99,7 +109,29 @@ class UpdateUserRequest(BaseModel):
 class StartSessionRequest(BaseModel):
     """Optional lesson metadata entered by the teacher."""
 
+    class_id: int
     title: str | None = Field(default=None, max_length=120)
+
+
+class NewClassRequest(BaseModel):
+    """A new class."""
+
+    name: str
+    school_year: str | None = None
+
+
+class UpdateClassRequest(BaseModel):
+    """Fields an administrator can change on a class."""
+
+    name: str | None = None
+    school_year: str | None = None
+    is_archived: bool | None = None
+
+
+class AddStudentRequest(BaseModel):
+    """An existing student to add to another class."""
+
+    student_code: str
 
 
 class AttendanceUpdate(BaseModel):
@@ -158,6 +190,7 @@ async def lifespan(_: FastAPI):
     create_tables()
     with SessionLocal() as db:
         UserService.ensure_admin(db, settings.teacher_password)
+        ClassService.ensure_default(db)
     if settings.uses_default_credentials:
         logger.warning(
             "Đang dùng mật khẩu/khóa ký mặc định. Hãy đặt FACE_APP_TEACHER_PASSWORD "
@@ -222,6 +255,61 @@ def require_admin(user: CurrentUser) -> User:
     if user.role != ROLE_ADMIN:
         raise HTTPException(status_code=403, detail="Chỉ Quản trị mới có quyền này")
     return user
+
+
+def _can_access_class(db: Session, user: User, class_id: int) -> bool:
+    return user.role == ROLE_ADMIN or ClassService.is_assigned(db, class_id, user.id)
+
+
+def _require_class_access(db: Session, user: User, class_id: int) -> None:
+    try:
+        ClassService.get(db, class_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    if not _can_access_class(db, user, class_id):
+        raise HTTPException(status_code=403, detail="Bạn không phụ trách lớp này")
+
+
+def _scope_class(db: Session, user: User, class_id: int | None) -> int | None:
+    """Return the class a request is limited to; only admins may omit it."""
+
+    if class_id is not None:
+        _require_class_access(db, user, class_id)
+        return class_id
+    if user.role != ROLE_ADMIN:
+        raise HTTPException(status_code=400, detail="Vui lòng chọn lớp")
+    return None
+
+
+def _require_session_access(
+    db: Session, user: User, session_id: int
+) -> ClassroomSession:
+    try:
+        classroom_session = ClassroomService.get_session(db, session_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    allowed = user.role == ROLE_ADMIN or (
+        classroom_session.class_id is not None
+        and ClassService.is_assigned(db, classroom_session.class_id, user.id)
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Bạn không phụ trách lớp này")
+    return classroom_session
+
+
+def _student_accessible(db: Session, user: User, student_id: int) -> bool:
+    return user.role == ROLE_ADMIN or ClassService.teacher_has_student(
+        db, user.id, student_id
+    )
+
+
+def _require_student_access(db: Session, user: User, student_id: int) -> None:
+    try:
+        StudentService.get(db, student_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    if not _student_accessible(db, user, student_id):
+        raise HTTPException(status_code=403, detail="Bạn không phụ trách học sinh này")
 
 
 def _require_secure_request(request: Request) -> None:
@@ -350,15 +438,115 @@ def health() -> dict[str, object]:
     }
 
 
-@app.get("/api/students", dependencies=[Depends(require_teacher)])
-def list_students(db: Annotated[Session, Depends(get_db)]) -> list[dict[str, object]]:
-    """Return registered students."""
+@app.get("/api/classes")
+def list_classes(
+    user: CurrentUser, db: Annotated[Session, Depends(get_db)]
+) -> list[dict[str, object]]:
+    """Return the classes the signed-in account can open."""
 
-    return [_student_payload(student) for student in StudentService.list_all(db)]
+    classes = (
+        ClassService.list_all(db)
+        if user.role == ROLE_ADMIN
+        else ClassService.list_for_teacher(db, user.id)
+    )
+    return [_class_payload(school_class) for school_class in classes]
+
+
+@app.post("/api/classes", dependencies=[Depends(require_admin)])
+def create_class(
+    payload: NewClassRequest, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, object]:
+    """Create a class."""
+
+    try:
+        school_class = ClassService.create(db, payload.name, payload.school_year)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return _class_payload(school_class)
+
+
+@app.patch("/api/classes/{class_id}", dependencies=[Depends(require_admin)])
+def update_class(
+    class_id: int,
+    payload: UpdateClassRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Rename or archive a class."""
+
+    try:
+        school_class = ClassService.update(
+            db, class_id, **payload.model_dump(exclude_unset=True)
+        )
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return _class_payload(school_class)
+
+
+@app.put(
+    "/api/classes/{class_id}/teachers/{user_id}",
+    dependencies=[Depends(require_admin)],
+)
+def assign_teacher(
+    class_id: int, user_id: int, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, str]:
+    """Give a teacher access to a class."""
+
+    try:
+        ClassService.assign_teacher(db, class_id, user_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return {"status": "assigned"}
+
+
+@app.delete(
+    "/api/classes/{class_id}/teachers/{user_id}",
+    dependencies=[Depends(require_admin)],
+)
+def unassign_teacher(
+    class_id: int, user_id: int, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, str]:
+    """Remove a teacher's access to a class."""
+
+    try:
+        ClassService.unassign_teacher(db, class_id, user_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return {"status": "unassigned"}
+
+
+@app.post("/api/classes/{class_id}/students", dependencies=[Depends(require_admin)])
+def add_existing_student(
+    class_id: int,
+    payload: AddStudentRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Add an already registered student to another class."""
+
+    try:
+        student = StudentService.find_by_code(db, payload.student_code)
+        ClassService.add_student(db, class_id, student.id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return _student_payload(student)
+
+
+@app.get("/api/students")
+def list_students(
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    class_id: int | None = None,
+) -> list[dict[str, object]]:
+    """Return the students of one class; administrators may list everyone."""
+
+    scope = _scope_class(db, user, class_id)
+    return [_student_payload(student) for student in StudentService.list_all(db, scope)]
 
 
 async def _read_face_image(
-    image: UploadFile, db: Session, exclude_student_id: int | None = None
+    image: UploadFile,
+    db: Session,
+    user: User,
+    exclude_student_id: int | None = None,
 ) -> tuple[list[float], bytes]:
     """Validate an uploaded image, extract one embedding and reject duplicates."""
 
@@ -385,38 +573,46 @@ async def _read_face_image(
         exclude_student_id=exclude_student_id,
     )
     if duplicate is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
+        detail = "Khuôn mặt này trùng với một học sinh đã đăng ký ở lớp khác"
+        if _student_accessible(db, user, duplicate.id):
+            detail = (
                 "Khuôn mặt này trùng với học sinh đã đăng ký "
                 f"{duplicate.fullname} ({duplicate.student_code}, {confidence:.0f}%)"
-            ),
-        )
+            )
+        raise HTTPException(status_code=409, detail=detail)
     return embedding, content
 
 
-@app.post("/register", include_in_schema=False, dependencies=[Depends(require_teacher)])
-@app.post("/api/students/register", dependencies=[Depends(require_teacher)])
+@app.post("/register", include_in_schema=False)
+@app.post("/api/students/register")
 async def register_student(
     student_code: Annotated[str, Form()],
     fullname: Annotated[str, Form()],
+    user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
+    class_id: Annotated[int | None, Form()] = None,
     image: UploadFile | None = None,
 ) -> dict[str, object]:
-    """Register a student from one webcam JPEG or uploaded image (optional)."""
+    """Register a student into a class from a webcam JPEG or uploaded image."""
 
+    scope = _scope_class(db, user, class_id)
     if db.scalar(select(Student).where(Student.student_code == student_code.strip())):
         raise HTTPException(status_code=409, detail="Mã học sinh đã tồn tại")
 
     embedding = None
     avatar_path = None
     if image is not None and image.filename:
-        embedding, content = await _read_face_image(image, db)
+        embedding, content = await _read_face_image(image, db, user)
         avatar_path = storage.save_avatar(content)
 
     try:
         student = StudentService.register(
-            db, student_code, fullname, embedding, avatar_path
+            db,
+            student_code,
+            fullname,
+            embedding,
+            avatar_path,
+            class_ids=[scope] if scope is not None else [],
         )
     except DomainError as exc:
         if avatar_path:
@@ -425,20 +621,18 @@ async def register_student(
     return _student_payload(student)
 
 
-@app.post("/api/students/{student_id}/face", dependencies=[Depends(require_teacher)])
+@app.post("/api/students/{student_id}/face")
 async def update_student_face(
     student_id: int,
     image: UploadFile,
+    user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
     """Replace the face sample of a student (re-enrollment)."""
 
-    try:
-        StudentService.get(db, student_id)
-    except DomainError as exc:
-        raise _domain_error(exc) from exc
+    _require_student_access(db, user, student_id)
     embedding, content = await _read_face_image(
-        image, db, exclude_student_id=student_id
+        image, db, user, exclude_student_id=student_id
     )
     avatar_path = storage.save_avatar(content)
     student, previous = StudentService.update_face(
@@ -449,89 +643,110 @@ async def update_student_face(
     return _student_payload(student)
 
 
-@app.delete("/api/students/{student_id}", dependencies=[Depends(require_teacher)])
+@app.delete("/api/students/{student_id}")
 def delete_student(
-    student_id: int, db: Annotated[Session, Depends(get_db)]
+    student_id: int,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    class_id: int | None = None,
 ) -> dict[str, str]:
-    """Delete a student, the face sample and attendance history."""
+    """Remove a student from a class, or everywhere when no class is given."""
 
+    scope = _scope_class(db, user, class_id)
     try:
-        StudentService.delete(db, student_id, storage)
+        if scope is None:
+            StudentService.delete(db, student_id, storage)
+        else:
+            ClassService.remove_student(db, scope, student_id, storage)
     except DomainError as exc:
         raise _domain_error(exc) from exc
     return {"status": "deleted"}
 
 
-@app.get("/api/avatars/{name}", dependencies=[Depends(require_teacher)])
-def get_avatar(name: str) -> Response:
+@app.get("/api/avatars/{name}")
+def get_avatar(
+    name: str, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
+) -> Response:
     """Decrypt and return one protected avatar image."""
 
+    student = db.scalar(select(Student).where(Student.avatar_path == name))
+    if student is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh đại diện")
+    _require_student_access(db, user, student.id)
     try:
         return Response(storage.read_avatar(name), media_type="image/jpeg")
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh đại diện") from exc
 
 
-@app.post("/api/sessions", dependencies=[Depends(require_teacher)])
+@app.post("/api/sessions")
 def start_session(
+    payload: StartSessionRequest,
+    user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
-    payload: StartSessionRequest | None = None,
 ) -> dict[str, object]:
-    """Start a classroom session."""
+    """Start a lesson for one class."""
 
+    _require_class_access(db, user, payload.class_id)
     try:
         classroom_session = ClassroomService.start_session(
-            db, payload.title if payload else None
+            db, payload.title, class_id=payload.class_id, teacher_id=user.id
         )
     except DomainError as exc:
         raise _domain_error(exc) from exc
     return _session_payload(db, classroom_session)
 
 
-@app.get("/api/sessions/active", dependencies=[Depends(require_teacher)])
-def active_session(db: Annotated[Session, Depends(get_db)]) -> dict[str, object] | None:
-    """Return the active classroom session and attendance."""
+@app.get("/api/sessions/active")
+def active_session(
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    class_id: int | None = None,
+) -> dict[str, object] | None:
+    """Return the active lesson of a class and its attendance."""
 
-    classroom_session = ClassroomService.get_active_session(db)
+    scope = _scope_class(db, user, class_id)
+    classroom_session = ClassroomService.get_active_session(db, scope)
     return _session_payload(db, classroom_session) if classroom_session else None
 
 
-@app.get("/api/sessions", dependencies=[Depends(require_teacher)])
+@app.get("/api/sessions")
 def session_history(
-    db: Annotated[Session, Depends(get_db)], limit: int = 20
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    limit: int = 20,
+    class_id: int | None = None,
 ) -> list[dict[str, object]]:
-    """Return recent lessons with attendance summaries."""
+    """Return recent lessons of a class with attendance summaries."""
 
+    scope = _scope_class(db, user, class_id)
     return [
         {
             **_session_header(classroom_session),
             "summary": ClassroomService.summary(db, classroom_session).to_dict(),
         }
         for classroom_session in ClassroomService.list_sessions(
-            db, max(1, min(limit, 100))
+            db, max(1, min(limit, 100)), scope
         )
     ]
 
 
-@app.get("/api/sessions/{session_id}", dependencies=[Depends(require_teacher)])
+@app.get("/api/sessions/{session_id}")
 def session_detail(
-    session_id: int, db: Annotated[Session, Depends(get_db)]
+    session_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
 ) -> dict[str, object]:
     """Return one lesson (active or finished) with full attendance."""
 
-    try:
-        classroom_session = ClassroomService.get_session(db, session_id)
-    except DomainError as exc:
-        raise _domain_error(exc) from exc
-    return _session_payload(db, classroom_session)
+    return _session_payload(db, _require_session_access(db, user, session_id))
 
 
-@app.post("/api/sessions/{session_id}/finish", dependencies=[Depends(require_teacher)])
+@app.post("/api/sessions/{session_id}/finish")
 def finish_session(
-    session_id: int, db: Annotated[Session, Depends(get_db)]
+    session_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
 ) -> dict[str, object]:
     """Finish the requested classroom session and return its summary."""
 
+    _require_session_access(db, user, session_id)
     try:
         classroom_session = ClassroomService.finish_session(db, session_id)
     except DomainError as exc:
@@ -542,41 +757,37 @@ def finish_session(
     }
 
 
-@app.put(
-    "/api/sessions/{session_id}/attendance/{student_id}",
-    dependencies=[Depends(require_teacher)],
-)
+@app.put("/api/sessions/{session_id}/attendance/{student_id}")
 def update_attendance(
     session_id: int,
     student_id: int,
     payload: AttendanceUpdate,
+    user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
     """Manually confirm or correct one student's attendance."""
 
+    classroom_session = _require_session_access(db, user, session_id)
+    if classroom_session.class_id is not None and not ClassService.has_student(
+        db, classroom_session.class_id, student_id
+    ):
+        raise HTTPException(status_code=404, detail="Học sinh không thuộc lớp này")
     try:
         state = ClassroomService.set_attendance(
             db, session_id, student_id, payload.present, payload.note
         )
-        classroom_session = ClassroomService.get_session(db, session_id)
     except DomainError as exc:
         raise _domain_error(exc) from exc
     return _attendance_payload(state, classroom_session)
 
 
-@app.get(
-    "/api/sessions/{session_id}/export.csv",
-    dependencies=[Depends(require_teacher)],
-)
+@app.get("/api/sessions/{session_id}/export.csv")
 def export_session_csv(
-    session_id: int, db: Annotated[Session, Depends(get_db)]
+    session_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
 ) -> Response:
     """Download the attendance sheet of one lesson as an Excel-friendly CSV."""
 
-    try:
-        classroom_session = ClassroomService.get_session(db, session_id)
-    except DomainError as exc:
-        raise _domain_error(exc) from exc
+    classroom_session = _require_session_access(db, user, session_id)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(
@@ -617,12 +828,13 @@ def export_session_csv(
     )
 
 
-@app.post("/api/sessions/{session_id}/pick", dependencies=[Depends(require_teacher)])
+@app.post("/api/sessions/{session_id}/pick")
 def pick_student(
-    session_id: int, db: Annotated[Session, Depends(get_db)]
+    session_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
 ) -> dict[str, object]:
     """Pick one uncalled present student."""
 
+    _require_session_access(db, user, session_id)
     try:
         selected = ClassroomService.pick_random(db, session_id)
     except DomainError as exc:
@@ -630,15 +842,13 @@ def pick_student(
     return _student_payload(selected.student)
 
 
-@app.post(
-    "/api/sessions/{session_id}/reset-called",
-    dependencies=[Depends(require_teacher)],
-)
+@app.post("/api/sessions/{session_id}/reset-called")
 def reset_called(
-    session_id: int, db: Annotated[Session, Depends(get_db)]
+    session_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
 ) -> dict[str, str]:
     """Reset the random-call round."""
 
+    _require_session_access(db, user, session_id)
     try:
         ClassroomService.reset_called(db, session_id)
     except DomainError as exc:
@@ -646,14 +856,21 @@ def reset_called(
     return {"status": "reset"}
 
 
-@app.get("/api/behaviors", dependencies=[Depends(require_teacher)])
+@app.get("/api/behaviors")
 def recent_behaviors(
+    user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
     limit: int = 30,
     session_id: int | None = None,
+    class_id: int | None = None,
 ) -> list[dict[str, object]]:
-    """Return recent behavior audit logs, optionally for one lesson."""
+    """Return recent behavior audit logs for a lesson or class."""
 
+    if session_id is not None:
+        _require_session_access(db, user, session_id)
+        scope = None
+    else:
+        scope = _scope_class(db, user, class_id)
     safe_limit = max(1, min(limit, 100))
     return [
         {
@@ -666,21 +883,32 @@ def recent_behaviors(
             "timestamp": iso_utc(log.timestamp),
             "snapshot_url": f"/api/snapshots/{log.snapshot_path}",
         }
-        for log in BehaviorLogService.list_recent(db, safe_limit, session_id)
+        for log in BehaviorLogService.list_recent(db, safe_limit, session_id, scope)
     ]
 
 
-@app.delete("/api/behaviors", dependencies=[Depends(require_teacher)])
-def clear_behaviors(db: Annotated[Session, Depends(get_db)]) -> dict[str, int]:
-    """Delete the complete behavior audit trail and evidence snapshots."""
+@app.delete("/api/behaviors")
+def clear_behaviors(
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    class_id: int | None = None,
+) -> dict[str, int]:
+    """Delete the behavior audit trail and evidence snapshots of a class."""
 
-    return {"deleted": BehaviorLogService.clear_all(db, storage)}
+    scope = _scope_class(db, user, class_id)
+    return {"deleted": BehaviorLogService.clear_all(db, storage, scope)}
 
 
-@app.get("/api/snapshots/{name}", dependencies=[Depends(require_teacher)])
-def get_snapshot(name: str) -> Response:
+@app.get("/api/snapshots/{name}")
+def get_snapshot(
+    name: str, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
+) -> Response:
     """Return one protected behavior evidence image."""
 
+    log = db.scalar(select(BehaviorLog).where(BehaviorLog.snapshot_path == name).limit(1))
+    if log is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh chụp bằng chứng")
+    _require_session_access(db, user, log.session_id)
     try:
         return Response(storage.read_snapshot(name), media_type="image/jpeg")
     except FileNotFoundError as exc:
@@ -692,14 +920,14 @@ async def video_stream(websocket: WebSocket) -> None:
     """Receive webcam JPEG frames and return annotated frame metadata."""
 
     try:
-        _verify_websocket(websocket)
+        class_id = _verify_websocket(websocket)
     except AuthenticationError:
         await websocket.close(code=1008)
         return
     await websocket.accept()
     # ``?overlay=server`` keeps the old annotated-JPEG mode for debugging.
     server_overlay = websocket.query_params.get("overlay") == "server"
-    processor = StreamProcessor(storage)
+    processor = StreamProcessor(storage, class_id=class_id)
     try:
         while True:
             message = await websocket.receive()
@@ -728,7 +956,9 @@ async def video_stream(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
 
 
-def _verify_websocket(websocket: WebSocket) -> None:
+def _verify_websocket(websocket: WebSocket) -> int:
+    """Check the connection and return the class this camera stream serves."""
+
     origin = websocket.headers.get("origin")
     if origin and origin not in settings.allowed_origins:
         raise AuthenticationError("Nguồn kết nối WebSocket không được cho phép")
@@ -737,9 +967,19 @@ def _verify_websocket(websocket: WebSocket) -> None:
         if forwarded_proto not in {"https", "wss"}:
             raise AuthenticationError("Yêu cầu kết nối bảo mật WSS")
     user_id = verify_user_token(websocket.cookies.get(settings.cookie_name))
+    try:
+        class_id = int(websocket.query_params.get("class_id", ""))
+    except ValueError as exc:
+        raise AuthenticationError("Thiếu lớp cho luồng camera") from exc
     with SessionLocal() as db:
-        if _active_user(db, user_id) is None:
+        user = _active_user(db, user_id)
+        if user is None:
             raise AuthenticationError("Tài khoản không còn hiệu lực")
+        if db.get(SchoolClass, class_id) is None or not _can_access_class(
+            db, user, class_id
+        ):
+            raise AuthenticationError("Bạn không phụ trách lớp này")
+    return class_id
 
 
 def _websocket_frame_bytes(message: dict[str, object]) -> bytes:
@@ -776,6 +1016,17 @@ def _websocket_behavior_config(message: dict[str, object]) -> list[str] | None:
     return enabled_behaviors
 
 
+def _class_payload(school_class: SchoolClass) -> dict[str, object]:
+    return {
+        "id": school_class.id,
+        "name": school_class.name,
+        "school_year": school_class.school_year,
+        "is_archived": school_class.is_archived,
+        "student_count": len(school_class.students),
+        "teacher_ids": [teacher.id for teacher in school_class.teachers],
+    }
+
+
 def _user_payload(user: User) -> dict[str, object]:
     return {
         "id": user.id,
@@ -802,6 +1053,7 @@ def _session_header(classroom_session: ClassroomSession) -> dict[str, object]:
     return {
         "id": classroom_session.id,
         "title": classroom_session.title,
+        "class_id": classroom_session.class_id,
         "status": classroom_session.status,
         "created_at": iso_utc(classroom_session.created_at),
         "finished_at": iso_utc(classroom_session.finished_at),

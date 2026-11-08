@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -47,6 +56,36 @@ class User(Base):
     )
 
 
+class_teachers = Table(
+    "class_teachers",
+    Base.metadata,
+    Column("class_id", ForeignKey("classes.id"), primary_key=True),
+    Column("user_id", ForeignKey("users.id"), primary_key=True),
+)
+class_students = Table(
+    "class_students",
+    Base.metadata,
+    Column("class_id", ForeignKey("classes.id"), primary_key=True),
+    Column("student_id", ForeignKey("students.id"), primary_key=True),
+)
+
+
+class SchoolClass(Base):
+    """A class or subject group taught by assigned teachers."""
+
+    __tablename__ = "classes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    school_year: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    teachers: Mapped[list["User"]] = relationship(secondary=class_teachers)
+    students: Mapped[list["Student"]] = relationship(
+        secondary=class_students, back_populates="classes"
+    )
+
+
 class Student(Base):
     """A registered student with a non-reversible face embedding."""
 
@@ -65,6 +104,9 @@ class Student(Base):
     session_entries: Mapped[list["SessionStudent"]] = relationship(
         back_populates="student", cascade="all, delete-orphan"
     )
+    classes: Mapped[list[SchoolClass]] = relationship(
+        secondary=class_students, back_populates="students"
+    )
 
 
 class ClassroomSession(Base):
@@ -81,6 +123,12 @@ class ClassroomSession(Base):
     )
     status: Mapped[str] = mapped_column(String(10), default="ACTIVE", index=True)
     title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    class_id: Mapped[int | None] = mapped_column(
+        ForeignKey("classes.id"), nullable=True, index=True
+    )
+    teacher_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
 
     students: Mapped[list["SessionStudent"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"

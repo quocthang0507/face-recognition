@@ -191,18 +191,22 @@ class StreamProcessor:
         storage: PrivateStorage,
         face_engine: FaceRecognitionEngine | None = None,
         behavior_engine: BehaviorEngine | None = None,
+        class_id: int | None = None,
     ) -> None:
         self.storage = storage
+        self.class_id = class_id
         self.face_engine = face_engine or FaceRecognitionEngine()
         self.behavior_engine = behavior_engine or BehaviorEngine()
         self.attendance = AttendanceStabilizer()
         self._session_id: int | None = None
         # Avoid two SQLite queries and a JSON decode of every embedding per frame.
         self._gallery = VersionedCache(
-            "students", lambda db: Gallery.build(StudentService.list_all(db))
+            "students",
+            lambda db: Gallery.build(StudentService.list_all(db, self.class_id)),
         )
         self._active_session = VersionedCache(
-            "sessions", ClassroomService.get_active_session
+            "sessions",
+            lambda db: ClassroomService.get_active_session(db, self.class_id),
         )
 
     @property

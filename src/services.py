@@ -18,9 +18,12 @@ from .config import settings
 from .models import (
     BehaviorLog,
     ClassroomSession,
+    SchoolClass,
     SessionStudent,
     Student,
     User,
+    class_students,
+    class_teachers,
     as_utc,
     utc_now,
 )
@@ -32,6 +35,7 @@ ROLE_ADMIN = "ADMIN"
 ROLE_TEACHER = "TEACHER"
 ROLES = (ROLE_ADMIN, ROLE_TEACHER)
 ADMIN_USERNAME = "admin"
+DEFAULT_CLASS_NAME = "Lớp mặc định"
 MIN_PASSWORD_LENGTH = 8
 USERNAME_PATTERN = re.compile(r"[a-z0-9._-]{3,50}")
 # Verified when the username is unknown, so both failures take the same time.
@@ -215,6 +219,7 @@ class StudentService:
         fullname: str,
         embedding: Sequence[float] | None = None,
         avatar_path: str | None = None,
+        class_ids: Sequence[int] = (),
     ) -> Student:
         """Register one student after validating unique identity fields."""
 
@@ -239,9 +244,15 @@ class StudentService:
         db.add(student)
         db.flush()
 
-        # Enroll in the currently active session if one exists
-        active_session = ClassroomService.get_active_session(db)
-        if active_session:
+        for class_id in class_ids:
+            student.classes.append(ClassService.get(db, class_id))
+        # Join the lessons running right now for this student's classes.
+        active_query = select(ClassroomSession).where(
+            ClassroomSession.status == "ACTIVE"
+        )
+        if class_ids:
+            active_query = active_query.where(ClassroomSession.class_id.in_(class_ids))
+        for active_session in db.scalars(active_query):
             db.add(
                 SessionStudent(
                     session_id=active_session.id,
@@ -312,10 +323,206 @@ class StudentService:
             storage.delete_avatar(avatar)
 
     @staticmethod
-    def list_all(db: Session) -> list[Student]:
-        """Return registered students ordered by full name."""
+    def list_all(db: Session, class_id: int | None = None) -> list[Student]:
+        """Return students ordered by full name, optionally for one class."""
 
-        return list(db.scalars(select(Student).order_by(Student.fullname)))
+        query = select(Student).order_by(Student.fullname)
+        if class_id is not None:
+            query = query.join(class_students).where(
+                class_students.c.class_id == class_id
+            )
+        return list(db.scalars(query))
+
+    @staticmethod
+    def find_by_code(db: Session, student_code: str) -> Student:
+        student = db.scalar(
+            select(Student).where(Student.student_code == student_code.strip())
+        )
+        if student is None:
+            raise NotFoundError("Không tìm thấy học sinh có mã này")
+        return student
+
+
+class ClassService:
+    """Manage classes, teacher assignments and class membership."""
+
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        normalized = " ".join(name.split())
+        if not normalized or len(normalized) > 100:
+            raise DomainError("Tên lớp phải có từ 1-100 ký tự")
+        return normalized
+
+    @staticmethod
+    def create(db: Session, name: str, school_year: str | None = None) -> SchoolClass:
+        normalized = ClassService._normalize_name(name)
+        if db.scalar(select(SchoolClass).where(SchoolClass.name == normalized)):
+            raise DomainError("Tên lớp đã tồn tại")
+        school_class = SchoolClass(
+            name=normalized, school_year=(school_year or "").strip() or None
+        )
+        db.add(school_class)
+        db.commit()
+        return school_class
+
+    @staticmethod
+    def ensure_default(db: Session) -> None:
+        """Give a brand-new installation one class to start from."""
+
+        if not db.scalar(select(func.count()).select_from(SchoolClass)):
+            ClassService.create(db, DEFAULT_CLASS_NAME)
+
+    @staticmethod
+    def get(db: Session, class_id: int) -> SchoolClass:
+        school_class = db.get(SchoolClass, class_id)
+        if school_class is None:
+            raise NotFoundError("Không tìm thấy lớp")
+        return school_class
+
+    @staticmethod
+    def list_all(db: Session) -> list[SchoolClass]:
+        return list(
+            db.scalars(
+                select(SchoolClass)
+                .where(SchoolClass.is_archived.is_(False))
+                .order_by(SchoolClass.name)
+            )
+        )
+
+    @staticmethod
+    def list_for_teacher(db: Session, user_id: int) -> list[SchoolClass]:
+        return list(
+            db.scalars(
+                select(SchoolClass)
+                .join(class_teachers)
+                .where(
+                    class_teachers.c.user_id == user_id,
+                    SchoolClass.is_archived.is_(False),
+                )
+                .order_by(SchoolClass.name)
+            )
+        )
+
+    @staticmethod
+    def update(
+        db: Session,
+        class_id: int,
+        name: str | None = None,
+        school_year: str | None = None,
+        is_archived: bool | None = None,
+    ) -> SchoolClass:
+        school_class = ClassService.get(db, class_id)
+        if name is not None:
+            normalized = ClassService._normalize_name(name)
+            duplicate = db.scalar(
+                select(SchoolClass).where(
+                    SchoolClass.name == normalized, SchoolClass.id != class_id
+                )
+            )
+            if duplicate:
+                raise DomainError("Tên lớp đã tồn tại")
+            school_class.name = normalized
+        if school_year is not None:
+            school_class.school_year = school_year.strip() or None
+        if is_archived is not None:
+            school_class.is_archived = is_archived
+        db.commit()
+        return school_class
+
+    @staticmethod
+    def is_assigned(db: Session, class_id: int, user_id: int) -> bool:
+        return bool(
+            db.scalar(
+                select(class_teachers.c.user_id).where(
+                    class_teachers.c.class_id == class_id,
+                    class_teachers.c.user_id == user_id,
+                )
+            )
+        )
+
+    @staticmethod
+    def has_student(db: Session, class_id: int, student_id: int) -> bool:
+        return bool(
+            db.scalar(
+                select(class_students.c.student_id).where(
+                    class_students.c.class_id == class_id,
+                    class_students.c.student_id == student_id,
+                )
+            )
+        )
+
+    @staticmethod
+    def teacher_has_student(db: Session, user_id: int, student_id: int) -> bool:
+        return bool(
+            db.scalar(
+                select(class_students.c.student_id)
+                .join(
+                    class_teachers,
+                    class_teachers.c.class_id == class_students.c.class_id,
+                )
+                .where(
+                    class_teachers.c.user_id == user_id,
+                    class_students.c.student_id == student_id,
+                )
+                .limit(1)
+            )
+        )
+
+    @staticmethod
+    def assign_teacher(db: Session, class_id: int, user_id: int) -> None:
+        school_class = ClassService.get(db, class_id)
+        user = UserService.get(db, user_id)
+        if user not in school_class.teachers:
+            school_class.teachers.append(user)
+            db.commit()
+
+    @staticmethod
+    def unassign_teacher(db: Session, class_id: int, user_id: int) -> None:
+        school_class = ClassService.get(db, class_id)
+        user = UserService.get(db, user_id)
+        if user in school_class.teachers:
+            school_class.teachers.remove(user)
+            db.commit()
+
+    @staticmethod
+    def add_student(db: Session, class_id: int, student_id: int) -> None:
+        """Add an existing student, joining the class's lesson if one is running."""
+
+        school_class = ClassService.get(db, class_id)
+        student = StudentService.get(db, student_id)
+        if student not in school_class.students:
+            school_class.students.append(student)
+            db.flush()
+        active = ClassroomService.get_active_session(db, class_id)
+        if active is not None:
+            ClassroomService._state(db, active.id, student_id, create=True)
+        db.commit()
+        cache.bump("students")
+
+    @staticmethod
+    def remove_student(
+        db: Session, class_id: int, student_id: int, storage: PrivateStorage
+    ) -> None:
+        """Remove a student from a class, deleting them after their last class."""
+
+        school_class = ClassService.get(db, class_id)
+        student = StudentService.get(db, student_id)
+        if student not in school_class.students:
+            raise NotFoundError("Học sinh không thuộc lớp này")
+        if len(student.classes) <= 1:
+            StudentService.delete(db, student_id, storage)
+            return
+        school_class.students.remove(student)
+        active = ClassroomService.get_active_session(db, class_id)
+        if active is not None:
+            db.execute(
+                delete(SessionStudent).where(
+                    SessionStudent.session_id == active.id,
+                    SessionStudent.student_id == student_id,
+                )
+            )
+        db.commit()
+        cache.bump("students")
 
 
 @dataclass(frozen=True)
@@ -348,21 +555,30 @@ class ClassroomService:
     """Manage lesson lifecycle, attendance and random student calls."""
 
     @staticmethod
-    def start_session(db: Session, title: str | None = None) -> ClassroomSession:
-        """Start a lesson and initialize attendance state for all students."""
+    def start_session(
+        db: Session,
+        title: str | None = None,
+        class_id: int | None = None,
+        teacher_id: int | None = None,
+    ) -> ClassroomSession:
+        """Start a lesson and initialize attendance state for its students."""
 
-        active = ClassroomService.get_active_session(db)
+        active = ClassroomService.get_active_session(db, class_id)
         if active is not None:
             raise DomainError("Có phiên học đang hoạt động")
         normalized_title = " ".join((title or "").split()) or None
         if normalized_title and len(normalized_title) > 120:
             raise DomainError("Tên buổi học tối đa 120 ký tự")
-        session = ClassroomSession(status="ACTIVE", title=normalized_title)
+        session = ClassroomSession(
+            status="ACTIVE",
+            title=normalized_title,
+            class_id=class_id,
+            teacher_id=teacher_id,
+        )
         db.add(session)
         db.flush()
 
-        students = db.scalars(select(Student)).all()
-        for student in students:
+        for student in StudentService.list_all(db, class_id):
             db.add(
                 SessionStudent(
                     session_id=session.id,
@@ -376,12 +592,15 @@ class ClassroomService:
         return session
 
     @staticmethod
-    def get_active_session(db: Session) -> ClassroomSession | None:
-        """Return the current active lesson if any."""
+    def get_active_session(
+        db: Session, class_id: int | None = None
+    ) -> ClassroomSession | None:
+        """Return the active lesson of one class, or any active lesson."""
 
-        return db.scalar(
-            select(ClassroomSession).where(ClassroomSession.status == "ACTIVE")
-        )
+        query = select(ClassroomSession).where(ClassroomSession.status == "ACTIVE")
+        if class_id is not None:
+            query = query.where(ClassroomSession.class_id == class_id)
+        return db.scalar(query.limit(1))
 
     @staticmethod
     def get_session(db: Session, session_id: int) -> ClassroomSession:
@@ -393,16 +612,19 @@ class ClassroomService:
         return classroom_session
 
     @staticmethod
-    def list_sessions(db: Session, limit: int = 20) -> list[ClassroomSession]:
-        """Return the newest lessons first."""
+    def list_sessions(
+        db: Session, limit: int = 20, class_id: int | None = None
+    ) -> list[ClassroomSession]:
+        """Return the newest lessons first, optionally for one class."""
 
+        query = select(ClassroomSession)
+        if class_id is not None:
+            query = query.where(ClassroomSession.class_id == class_id)
         return list(
             db.scalars(
-                select(ClassroomSession)
-                .order_by(
+                query.order_by(
                     ClassroomSession.created_at.desc(), ClassroomSession.id.desc()
-                )
-                .limit(limit)
+                ).limit(limit)
             )
         )
 
@@ -617,11 +839,18 @@ class BehaviorLogService:
 
     @staticmethod
     def list_recent(
-        db: Session, limit: int = 50, session_id: int | None = None
+        db: Session,
+        limit: int = 50,
+        session_id: int | None = None,
+        class_id: int | None = None,
     ) -> list[BehaviorLog]:
-        """Return the newest behavior events, optionally for one lesson."""
+        """Return the newest behavior events, optionally for a lesson or class."""
 
         query = select(BehaviorLog).options(joinedload(BehaviorLog.student))
+        if class_id is not None:
+            query = query.join(BehaviorLog.session).where(
+                ClassroomSession.class_id == class_id
+            )
         if session_id is not None:
             query = query.where(BehaviorLog.session_id == session_id)
         return list(
@@ -647,10 +876,17 @@ class BehaviorLogService:
         return BehaviorLogService._delete_logs(db, storage, logs)
 
     @staticmethod
-    def clear_all(db: Session, storage: PrivateStorage) -> int:
-        """Delete every behavior log and its evidence snapshot."""
+    def clear_all(
+        db: Session, storage: PrivateStorage, class_id: int | None = None
+    ) -> int:
+        """Delete behavior logs and snapshots, optionally for one class."""
 
-        logs = list(db.scalars(select(BehaviorLog)))
+        query = select(BehaviorLog)
+        if class_id is not None:
+            query = query.join(BehaviorLog.session).where(
+                ClassroomSession.class_id == class_id
+            )
+        logs = list(db.scalars(query))
         return BehaviorLogService._delete_logs(db, storage, logs)
 
     @staticmethod
