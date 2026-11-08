@@ -1,4 +1,4 @@
-"""Small signed-cookie authentication helper for teacher access."""
+"""Signed-cookie sessions and password hashing for teacher accounts."""
 
 from __future__ import annotations
 
@@ -6,9 +6,14 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 import time
 
 from .config import settings
+
+SCRYPT_N = 2**14
+SCRYPT_R = 8
+SCRYPT_P = 1
 
 
 class AuthenticationError(ValueError):
@@ -23,52 +28,72 @@ def _decode(raw: str) -> bytes:
     return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
 
 
-def issue_teacher_token(now: int | None = None) -> str:
-    """Issue an expiring teacher access token signed with HMAC SHA-256."""
-
-    issued_at = int(time.time() if now is None else now)
-    payload = _encode(
-        json.dumps(
-            {"role": "teacher", "exp": issued_at + settings.token_ttl_seconds},
-            separators=(",", ":"),
-        ).encode("utf-8")
-    )
-    signature = hmac.new(
+def _sign(payload: str) -> bytes:
+    return hmac.new(
         settings.token_secret.encode("utf-8"),
         payload.encode("ascii"),
         hashlib.sha256,
     ).digest()
-    return f"{payload}.{_encode(signature)}"
 
 
-def verify_teacher_token(token: str | None, now: int | None = None) -> None:
-    """Validate a teacher token and raise on invalid input."""
+def issue_user_token(user_id: int, now: int | None = None) -> str:
+    """Issue an expiring access token for one account, signed with HMAC SHA-256."""
+
+    issued_at = int(time.time() if now is None else now)
+    payload = _encode(
+        json.dumps(
+            {"uid": user_id, "exp": issued_at + settings.token_ttl_seconds},
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    return f"{payload}.{_encode(_sign(payload))}"
+
+
+def verify_user_token(token: str | None, now: int | None = None) -> int:
+    """Return the account ID in a valid token and raise on invalid input."""
 
     if not token:
-        raise AuthenticationError("Thiếu token giáo viên")
+        raise AuthenticationError("Thiếu token đăng nhập")
     try:
         payload, supplied_signature = token.split(".", maxsplit=1)
-        expected_signature = hmac.new(
-            settings.token_secret.encode("utf-8"),
-            payload.encode("ascii"),
-            hashlib.sha256,
-        ).digest()
-        if not hmac.compare_digest(expected_signature, _decode(supplied_signature)):
-            raise AuthenticationError("Token giáo viên không hợp lệ")
+        if not hmac.compare_digest(_sign(payload), _decode(supplied_signature)):
+            raise AuthenticationError("Token đăng nhập không hợp lệ")
         content = json.loads(_decode(payload))
         current_time = int(time.time() if now is None else now)
-        if content.get("role") != "teacher" or int(content["exp"]) < current_time:
-            raise AuthenticationError("Token giáo viên đã hết hạn")
+        if int(content["exp"]) < current_time:
+            raise AuthenticationError("Token đăng nhập đã hết hạn")
+        return int(content["uid"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         if isinstance(exc, AuthenticationError):
             raise
-        raise AuthenticationError("Token giáo viên không hợp lệ") from exc
+        raise AuthenticationError("Token đăng nhập không hợp lệ") from exc
 
 
-def password_matches(password: str) -> bool:
-    """Compare the supplied teacher password without timing leaks."""
+def _scrypt(password: str, salt: bytes, n: int, r: int, p: int) -> bytes:
+    return hashlib.scrypt(
+        password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=32, maxmem=64 << 20
+    )
 
-    return hmac.compare_digest(password, settings.teacher_password)
+
+def hash_password(password: str) -> str:
+    """Return a salted scrypt hash that stores its own parameters."""
+
+    salt = secrets.token_bytes(16)
+    digest = _scrypt(password, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P)
+    return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${_encode(salt)}${_encode(digest)}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """Compare a password with a stored hash without timing leaks."""
+
+    try:
+        scheme, n, r, p, salt, digest = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        candidate = _scrypt(password, _decode(salt), int(n), int(r), int(p))
+        return hmac.compare_digest(candidate, _decode(digest))
+    except ValueError:
+        return False
 
 
 class LoginThrottle:

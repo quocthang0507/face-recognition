@@ -31,6 +31,22 @@ def iso_utc(value: datetime | None) -> str | None:
     return normalized.isoformat() if normalized else None
 
 
+class User(Base):
+    """A person who can sign in to the dashboard."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    fullname: Mapped[str] = mapped_column(String(100))
+    role: Mapped[str] = mapped_column(String(10))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+
+
 class Student(Base):
     """A registered student with a non-reversible face embedding."""
 

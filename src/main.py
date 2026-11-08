@@ -35,9 +35,8 @@ from sqlalchemy.orm import Session
 from .auth import (
     AuthenticationError,
     LoginThrottle,
-    issue_teacher_token,
-    password_matches,
-    verify_teacher_token,
+    issue_user_token,
+    verify_user_token,
 )
 from .config import BASE_DIR, settings
 from .database import SessionLocal, create_tables, get_db
@@ -46,13 +45,16 @@ from .face_engine import (
     FaceRecognitionEngine,
     find_similar_student,
 )
-from .models import ClassroomSession, SessionStudent, Student, as_utc, iso_utc
+from .models import ClassroomSession, SessionStudent, Student, User, as_utc, iso_utc
 from .services import (
     BehaviorLogService,
     ClassroomService,
     DomainError,
     NotFoundError,
+    ROLE_ADMIN,
+    ROLE_TEACHER,
     StudentService,
+    UserService,
     has_face_embedding,
     is_late,
 )
@@ -70,9 +72,28 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class LoginRequest(BaseModel):
-    """Teacher login payload."""
+    """Account login payload."""
 
+    username: str
     password: str
+
+
+class NewUserRequest(BaseModel):
+    """A new dashboard account."""
+
+    username: str
+    password: str
+    fullname: str
+    role: str = ROLE_TEACHER
+
+
+class UpdateUserRequest(BaseModel):
+    """Fields an administrator can change on an account."""
+
+    fullname: str | None = None
+    role: str | None = None
+    is_active: bool | None = None
+    password: str | None = None
 
 
 class StartSessionRequest(BaseModel):
@@ -135,6 +156,8 @@ async def lifespan(_: FastAPI):
     """Initialize tables and retention cleanup at application startup."""
 
     create_tables()
+    with SessionLocal() as db:
+        UserService.ensure_admin(db, settings.teacher_password)
     if settings.uses_default_credentials:
         logger.warning(
             "Đang dùng mật khẩu/khóa ký mặc định. Hãy đặt FACE_APP_TEACHER_PASSWORD "
@@ -168,17 +191,37 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
+def _active_user(db: Session, user_id: int) -> User | None:
+    user = db.get(User, user_id)
+    return user if user is not None and user.is_active else None
+
+
 def require_teacher(
     request: Request,
+    db: Annotated[Session, Depends(get_db)],
     token: Annotated[str | None, Cookie(alias=settings.cookie_name)] = None,
-) -> None:
-    """Reject API calls without a valid teacher cookie."""
+) -> User:
+    """Return the signed-in account or reject the request."""
 
     _require_secure_request(request)
     try:
-        verify_teacher_token(token)
+        user = _active_user(db, verify_user_token(token))
     except AuthenticationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=401, detail="Tài khoản không còn hiệu lực")
+    return user
+
+
+CurrentUser = Annotated[User, Depends(require_teacher)]
+
+
+def require_admin(user: CurrentUser) -> User:
+    """Allow administrators only."""
+
+    if user.role != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="Chỉ Quản trị mới có quyền này")
+    return user
 
 
 def _require_secure_request(request: Request) -> None:
@@ -209,9 +252,12 @@ def favicon() -> FileResponse:
 
 @app.post("/api/auth/login")
 def login(
-    payload: LoginRequest, request: Request, response: Response
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, str]:
-    """Authenticate the teacher and set an HttpOnly cookie."""
+    """Authenticate an account and set an HttpOnly cookie."""
 
     client = request.client.host if request.client else "unknown"
     retry_after = login_throttle.retry_after(client)
@@ -221,13 +267,16 @@ def login(
             detail=f"Nhập sai quá nhiều lần. Thử lại sau {retry_after} giây",
             headers={"Retry-After": str(retry_after)},
         )
-    if not password_matches(payload.password):
+    user = UserService.authenticate(db, payload.username, payload.password)
+    if user is None:
         login_throttle.record_failure(client)
-        raise HTTPException(status_code=401, detail="Mật khẩu giáo viên không chính xác")
+        raise HTTPException(
+            status_code=401, detail="Tên đăng nhập hoặc mật khẩu không chính xác"
+        )
     login_throttle.record_success(client)
     response.set_cookie(
         key=settings.cookie_name,
-        value=issue_teacher_token(),
+        value=issue_user_token(user.id),
         httponly=True,
         secure=settings.secure_cookie,
         samesite="strict",
@@ -244,11 +293,50 @@ def logout(response: Response) -> dict[str, str]:
     return {"status": "logged_out"}
 
 
-@app.get("/api/auth/status", dependencies=[Depends(require_teacher)])
-def auth_status() -> dict[str, str]:
-    """Confirm that the current cookie is valid."""
+@app.get("/api/auth/status")
+def auth_status(user: CurrentUser) -> dict[str, object]:
+    """Confirm that the current cookie is valid and say who it belongs to."""
 
-    return {"status": "authenticated"}
+    return {"status": "authenticated", "user": _user_payload(user)}
+
+
+@app.get("/api/users", dependencies=[Depends(require_admin)])
+def list_users(db: Annotated[Session, Depends(get_db)]) -> list[dict[str, object]]:
+    """Return every dashboard account."""
+
+    return [_user_payload(user) for user in UserService.list_all(db)]
+
+
+@app.post("/api/users", dependencies=[Depends(require_admin)])
+def create_user(
+    payload: NewUserRequest, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, object]:
+    """Create a dashboard account."""
+
+    try:
+        user = UserService.create(
+            db, payload.username, payload.password, payload.fullname, payload.role
+        )
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return _user_payload(user)
+
+
+@app.patch("/api/users/{user_id}", dependencies=[Depends(require_admin)])
+def update_user(
+    user_id: int,
+    payload: UpdateUserRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Change, disable or reset the password of an account."""
+
+    try:
+        user = UserService.update(
+            db, user_id, **payload.model_dump(exclude_unset=True)
+        )
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return _user_payload(user)
 
 
 @app.get("/api/health")
@@ -648,7 +736,10 @@ def _verify_websocket(websocket: WebSocket) -> None:
     if settings.secure_transport_only and websocket.url.scheme != "wss":
         if forwarded_proto not in {"https", "wss"}:
             raise AuthenticationError("Yêu cầu kết nối bảo mật WSS")
-    verify_teacher_token(websocket.cookies.get(settings.cookie_name))
+    user_id = verify_user_token(websocket.cookies.get(settings.cookie_name))
+    with SessionLocal() as db:
+        if _active_user(db, user_id) is None:
+            raise AuthenticationError("Tài khoản không còn hiệu lực")
 
 
 def _websocket_frame_bytes(message: dict[str, object]) -> bytes:
@@ -683,6 +774,16 @@ def _websocket_behavior_config(message: dict[str, object]) -> list[str] | None:
     ):
         raise ValueError("enabled_behaviors phải là một danh sách chuỗi")
     return enabled_behaviors
+
+
+def _user_payload(user: User) -> dict[str, object]:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "fullname": user.fullname,
+        "role": user.role,
+        "is_active": user.is_active,
+    }
 
 
 def _student_payload(student: Student) -> dict[str, object]:

@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, text
@@ -56,9 +57,12 @@ def backups(db_path: Path) -> list[Path]:
 def create_database_without_version(engine: Engine) -> None:
     """A database written by a release that had no Alembic."""
 
-    Base.metadata.create_all(engine)
     with engine.begin() as connection:
+        command.upgrade(migrate._config(connection), migrate.BASELINE_REVISION)
+        connection.execute(text("DROP TABLE alembic_version"))
+    with engine.connect() as connection:
         connection.execute(text("PRAGMA journal_mode=WAL"))
+    with engine.begin() as connection:
         connection.execute(INSERT_STUDENT)
 
 

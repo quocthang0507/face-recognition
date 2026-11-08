@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+ADMIN_USERNAME = "admin"
 PASSWORD = "e2e-test-password"
 PICK_TIMEOUT_MS = 15000
 

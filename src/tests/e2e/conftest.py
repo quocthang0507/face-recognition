@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from .helpers import PASSWORD
+from .helpers import ADMIN_USERNAME, PASSWORD
 
 if find_spec("playwright") is None:
     # `pytest src/tests` must keep working on machines without Playwright.
@@ -169,7 +169,9 @@ def _reset_application(request) -> None:
 def dashboard(anonymous_page, context):
     """A signed-in dashboard starting from an empty class and no active session."""
 
-    response = context.request.post("/api/auth/login", data={"password": PASSWORD})
+    response = context.request.post(
+        "/api/auth/login", data={"username": ADMIN_USERNAME, "password": PASSWORD}
+    )
     assert response.ok
     _reset_application(context.request)
     anonymous_page.goto("/")

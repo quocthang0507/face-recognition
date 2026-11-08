@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -12,12 +13,14 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, joinedload
 
 from . import cache
+from .auth import hash_password, verify_password
 from .config import settings
 from .models import (
     BehaviorLog,
     ClassroomSession,
     SessionStudent,
     Student,
+    User,
     as_utc,
     utc_now,
 )
@@ -25,6 +28,14 @@ from .storage import PrivateStorage
 
 ATTENDANCE_AUTO = "AUTO"
 ATTENDANCE_MANUAL = "MANUAL"
+ROLE_ADMIN = "ADMIN"
+ROLE_TEACHER = "TEACHER"
+ROLES = (ROLE_ADMIN, ROLE_TEACHER)
+ADMIN_USERNAME = "admin"
+MIN_PASSWORD_LENGTH = 8
+USERNAME_PATTERN = re.compile(r"[a-z0-9._-]{3,50}")
+# Verified when the username is unknown, so both failures take the same time.
+_UNKNOWN_USER_HASH = hash_password("unknown-user-placeholder")
 
 
 class DomainError(ValueError):
@@ -71,6 +82,127 @@ def is_late(state: SessionStudent, classroom_session: ClassroomSession) -> bool:
     if not state.is_present or checked_in is None or started is None:
         return False
     return checked_in - started > timedelta(minutes=settings.late_after_minutes)
+
+
+class UserService:
+    """Manage dashboard accounts."""
+
+    @staticmethod
+    def _validate_password(password: str) -> None:
+        if len(password) < MIN_PASSWORD_LENGTH:
+            raise DomainError(f"Mật khẩu phải có ít nhất {MIN_PASSWORD_LENGTH} ký tự")
+
+    @staticmethod
+    def _validate_role(role: str) -> None:
+        if role not in ROLES:
+            raise DomainError("Vai trò không hợp lệ")
+
+    @staticmethod
+    def _normalize_fullname(fullname: str) -> str:
+        normalized = " ".join(fullname.split())
+        if not normalized or len(normalized) > 100:
+            raise DomainError("Họ và tên phải có từ 1-100 ký tự")
+        return normalized
+
+    @staticmethod
+    def create(
+        db: Session, username: str, password: str, fullname: str, role: str
+    ) -> User:
+        """Create one account after validating its fields."""
+
+        normalized_username = username.strip().lower()
+        if not USERNAME_PATTERN.fullmatch(normalized_username):
+            raise DomainError(
+                "Tên đăng nhập gồm 3-50 ký tự: chữ không dấu, số, dấu chấm, gạch"
+            )
+        UserService._validate_password(password)
+        UserService._validate_role(role)
+        normalized_name = UserService._normalize_fullname(fullname)
+        if db.scalar(select(User).where(User.username == normalized_username)):
+            raise DomainError("Tên đăng nhập đã tồn tại")
+        user = User(
+            username=normalized_username,
+            password_hash=hash_password(password),
+            fullname=normalized_name,
+            role=role,
+        )
+        db.add(user)
+        db.commit()
+        return user
+
+    @staticmethod
+    def authenticate(db: Session, username: str, password: str) -> User | None:
+        """Return the active account matching the credentials, if any."""
+
+        user = db.scalar(select(User).where(User.username == username.strip().lower()))
+        stored = user.password_hash if user else _UNKNOWN_USER_HASH
+        if not verify_password(password, stored):
+            return None
+        return user if user and user.is_active else None
+
+    @staticmethod
+    def get(db: Session, user_id: int) -> User:
+        user = db.get(User, user_id)
+        if user is None:
+            raise NotFoundError("Không tìm thấy tài khoản")
+        return user
+
+    @staticmethod
+    def list_all(db: Session) -> list[User]:
+        return list(db.scalars(select(User).order_by(User.username)))
+
+    @staticmethod
+    def update(
+        db: Session,
+        user_id: int,
+        fullname: str | None = None,
+        role: str | None = None,
+        is_active: bool | None = None,
+        password: str | None = None,
+    ) -> User:
+        """Change an account while always keeping one active administrator."""
+
+        user = UserService.get(db, user_id)
+        if role is not None:
+            UserService._validate_role(role)
+        loses_admin = user.role == ROLE_ADMIN and user.is_active and (
+            is_active is False or (role is not None and role != ROLE_ADMIN)
+        )
+        if loses_admin:
+            active_admins = db.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(User.role == ROLE_ADMIN, User.is_active.is_(True))
+            )
+            if active_admins <= 1:
+                raise DomainError("Phải còn ít nhất một tài khoản Quản trị đang hoạt động")
+        if fullname is not None:
+            user.fullname = UserService._normalize_fullname(fullname)
+        if password is not None:
+            UserService._validate_password(password)
+            user.password_hash = hash_password(password)
+        if role is not None:
+            user.role = role
+        if is_active is not None:
+            user.is_active = is_active
+        db.commit()
+        return user
+
+    @staticmethod
+    def ensure_admin(db: Session, password: str) -> None:
+        """Create the first administrator from the deployment's existing password."""
+
+        if db.scalar(select(func.count()).select_from(User)):
+            return
+        db.add(
+            User(
+                username=ADMIN_USERNAME,
+                password_hash=hash_password(password),
+                fullname="Quản trị viên",
+                role=ROLE_ADMIN,
+            )
+        )
+        db.commit()
 
 
 class StudentService:

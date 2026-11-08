@@ -27,6 +27,7 @@
         <symbol id="i-history" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
         <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 20h20"/></symbol>
         <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></symbol>
+        <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M16 4a4 4 0 0 1 0 8"/><path d="M18 14a7 7 0 0 1 4 7"/></symbol>
         <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
       </defs>
     </svg>
@@ -40,6 +41,8 @@
             <button type="button" id="display-desk" data-display-mode="desk" aria-pressed="true"><svg class="icon"><use href="#i-laptop"/></svg>Máy tính GV</button>
             <button type="button" id="display-tv" data-display-mode="tv" aria-pressed="false"><svg class="icon"><use href="#i-tv"/></svg>Chiếu TV</button>
           </div>
+          <span id="current-user" class="current-user desk-only"></span>
+          <button id="admin-button" class="button ghost desk-only hidden"><svg class="icon"><use href="#i-users"/></svg>Quản trị</button>
           <button id="settings-button" class="button ghost"><svg class="icon"><use href="#i-settings"/></svg>Cài đặt</button>
           <button id="logout-button" class="button ghost"><svg class="icon"><use href="#i-logout"/></svg>Đăng xuất</button>
         </div>
@@ -169,8 +172,9 @@
     <div id="login-modal" class="modal visible">
       <form id="login-form" class="modal-panel surface" role="dialog" aria-modal="true" aria-labelledby="login-title">
         <h2 id="login-title">Đăng nhập Dashboard</h2>
-        <p>Nhập mật khẩu giáo viên để mở API và luồng camera.</p>
-        <input name="password" type="password" aria-label="Mật khẩu giáo viên" placeholder="Mật khẩu giáo viên" required autofocus />
+        <p>Nhập tài khoản được cấp để mở Dashboard và luồng camera.</p>
+        <input name="username" class="login-username" aria-label="Tên đăng nhập" placeholder="Tên đăng nhập" autocomplete="username" required autofocus />
+        <input name="password" type="password" aria-label="Mật khẩu" placeholder="Mật khẩu" autocomplete="current-password" required />
         <button class="button primary full" type="submit">Đăng nhập</button>
         <span id="login-error" class="form-error" role="alert"></span>
       </form>
@@ -257,6 +261,32 @@
         </div>
 
         <button id="close-settings-button" class="button primary full">Lưu &amp; Đóng</button>
+      </div>
+    </div>
+
+    <div id="admin-modal" class="modal">
+      <div class="modal-panel admin-panel surface" role="dialog" aria-modal="true" aria-labelledby="admin-title">
+        <h2 id="admin-title">Quản trị</h2>
+        <section id="admin-accounts">
+          <h3>Tài khoản</h3>
+          <form id="new-user-form" class="admin-form">
+            <input id="new-user-username" aria-label="Tên đăng nhập" placeholder="Tên đăng nhập" maxlength="50" required />
+            <input id="new-user-fullname" aria-label="Họ và tên" placeholder="Họ và tên" maxlength="100" required />
+            <input id="new-user-password" type="password" aria-label="Mật khẩu" placeholder="Mật khẩu (từ 8 ký tự)" autocomplete="new-password" required />
+            <select id="new-user-role" class="select-field" aria-label="Vai trò">
+              <option value="TEACHER">Giáo viên</option>
+              <option value="ADMIN">Quản trị</option>
+            </select>
+            <button class="button secondary" type="submit">Thêm tài khoản</button>
+          </form>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Tên đăng nhập</th><th>Họ và tên</th><th>Vai trò</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+              <tbody id="admin-users"></tbody>
+            </table>
+          </div>
+        </section>
+        <button id="close-admin-button" class="button primary full">Đóng</button>
       </div>
     </div>
 

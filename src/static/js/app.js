@@ -72,20 +72,100 @@ function applyTheme(theme) {
 
 async function login(event) {
   event.preventDefault();
-  const password = new FormData(event.target).get("password");
+  const form = new FormData(event.target);
   try {
     await api("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
     });
     $("#login-modal").classList.remove("visible");
     $("#login-error").textContent = "";
     event.target.reset();
+    await loadCurrentUser();
     await refreshDashboard();
   } catch (error) {
     $("#login-error").textContent = error.message;
   }
+}
+
+async function loadCurrentUser() {
+  const { user } = await api("/api/auth/status");
+  state.user = user;
+  $("#current-user").textContent = user.fullname;
+  $("#admin-button").classList.toggle("hidden", user.role !== "ADMIN");
+}
+
+const ROLE_TEXT = { ADMIN: "Quản trị", TEACHER: "Giáo viên" };
+
+async function refreshUsers() {
+  const users = await api("/api/users");
+  $("#admin-users").innerHTML = users.map((user) => `
+    <tr>
+      <td>${escapeHtml(user.username)}</td>
+      <td>${escapeHtml(user.fullname)}</td>
+      <td>${ROLE_TEXT[user.role] || escapeHtml(user.role)}</td>
+      <td><span class="badge ${user.is_active ? "present" : "warn"}">${user.is_active ? "Hoạt động" : "Đã khóa"}</span></td>
+      <td><div class="row-actions">
+        <button type="button" class="button ghost" data-user-password="${user.id}">Đặt lại mật khẩu</button>
+        <button type="button" class="button ${user.is_active ? "danger" : "ghost"}" data-user-toggle="${user.id}" data-active="${user.is_active ? "1" : "0"}">${user.is_active ? "Khóa" : "Mở khóa"}</button>
+      </div></td>
+    </tr>
+  `).join("");
+}
+
+async function openAdmin() {
+  try {
+    await refreshAdmin();
+    $("#admin-modal").classList.add("visible");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function refreshAdmin() {
+  await refreshUsers();
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  try {
+    await api("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: $("#new-user-username").value,
+        fullname: $("#new-user-fullname").value,
+        password: $("#new-user-password").value,
+        role: $("#new-user-role").value,
+      }),
+    });
+    event.target.reset();
+    await refreshAdmin();
+    toast("Đã thêm tài khoản");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function updateUser(userId, changes) {
+  await api(`/api/users/${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+}
+
+async function onAdminUsersClick(event) {
+  const toggle = event.target.closest("[data-user-toggle]");
+  const reset = event.target.closest("[data-user-password]");
+  try {
+    if (toggle) {
+      await updateUser(Number(toggle.dataset.userToggle), { is_active: toggle.dataset.active !== "1" });
+      await refreshAdmin();
+    } else if (reset) {
+      const password = window.prompt("Mật khẩu mới (từ 8 ký tự):", "");
+      if (!password) return;
+      await updateUser(Number(reset.dataset.userPassword), { password });
+      toast("Đã đặt lại mật khẩu");
+    }
+  } catch (error) { toast(error.message, true); }
 }
 
 async function refreshVideoDevices() {
@@ -1158,6 +1238,10 @@ $("#register-form").addEventListener("submit", registerStudent);
 $("#student-list").addEventListener("click", onStudentListClick);
 $("#export-session-button").addEventListener("click", () => state.session && exportSession(state.session.id));
 $("#history-button").addEventListener("click", showHistory);
+$("#admin-button").addEventListener("click", openAdmin);
+$("#close-admin-button").addEventListener("click", () => $("#admin-modal").classList.remove("visible"));
+$("#new-user-form").addEventListener("submit", createUser);
+$("#admin-users").addEventListener("click", onAdminUsersClick);
 $("#report-body").addEventListener("click", onReportClick);
 $("#close-report-button").addEventListener("click", () => $("#report-modal").classList.remove("visible"));
 $("#reenroll-input").addEventListener("change", (event) => {
@@ -1179,9 +1263,10 @@ const setupOutsideClickClose = (modalSelector) => {
 setupOutsideClickClose("#settings-modal");
 setupOutsideClickClose("#picker-modal");
 setupOutsideClickClose("#report-modal");
+setupOutsideClickClose("#admin-modal");
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  for (const selector of ["#settings-modal", "#picker-modal", "#report-modal"]) {
+  for (const selector of ["#settings-modal", "#picker-modal", "#report-modal", "#admin-modal"]) {
     $(selector).classList.remove("visible");
   }
 });
@@ -1196,7 +1281,7 @@ $("#logout-button").addEventListener("click", async () => {
   location.reload();
 });
 
-api("/api/auth/status")
+loadCurrentUser()
   .then(() => {
     $("#login-modal").classList.remove("visible");
     refreshDashboard();
