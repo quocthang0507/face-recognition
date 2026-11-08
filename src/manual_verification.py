@@ -42,7 +42,8 @@ def run(camera_index: int, duration: float, no_preview: bool) -> dict[str, objec
         raise RuntimeError("OpenCV is required for webcam verification") from exc
     if no_preview and duration <= 0:
         raise ValueError("--no-preview requires a positive --duration")
-    behavior_engine = BehaviorEngine()
+    # Verification needs measurements on every frame, not the throttled rate.
+    behavior_engine = BehaviorEngine(behavior_fps=0, hand_fps=0)
     if not behavior_engine.available:
         raise RuntimeError("MediaPipe Face Mesh and Hands are not available")
     camera = cv2.VideoCapture(camera_index)

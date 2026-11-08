@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import logging
+import threading
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -55,13 +56,15 @@ from .services import (
     has_face_embedding,
     is_late,
 )
+from .reembed import reembed_outdated
 from .storage import PrivateStorage
 from .stream_processor import BEHAVIOR_LABELS, StreamProcessor, decode_jpeg
 
 logger = logging.getLogger("smart_classroom")
 storage = PrivateStorage()
 login_throttle = LoginThrottle()
-_health_engine: FaceRecognitionEngine | None = None
+_shared_engine: FaceRecognitionEngine | None = None
+_shared_engine_lock = threading.Lock()
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
@@ -90,14 +93,41 @@ def _cleanup_expired_logs() -> None:
         BehaviorLogService.cleanup_old(db, storage, settings.retention_days)
 
 
+def shared_face_engine() -> FaceRecognitionEngine:
+    """One face engine for registration and health checks (not per request)."""
+
+    global _shared_engine
+    with _shared_engine_lock:
+        if _shared_engine is None:
+            _shared_engine = FaceRecognitionEngine()
+        return _shared_engine
+
+
+def _registration_embedding(frame) -> list[float]:
+    # MediaPipe graphs are not thread-safe; serialise access to the shared one.
+    engine = shared_face_engine()
+    with _shared_engine_lock:
+        return engine.registration_embedding(frame)
+
+
 def _preload_models() -> None:
     try:
-        from .face_engine import FaceRecognitionEngine
-        engine = FaceRecognitionEngine()
-        if engine.detection_available:
-            engine._embedding_provider()
-    except Exception as exc:
-        print(f"Lỗi tải trước mô hình AI: {exc}")
+        engine = shared_face_engine()
+        if not engine.detection_available:
+            return
+        engine._embedding_provider()
+        with SessionLocal() as db:
+            updated, failed = reembed_outdated(
+                db,
+                storage,
+                lambda content: _registration_embedding(decode_jpeg(content)),
+            )
+        if updated or failed:
+            logger.info(
+                "Đã tính lại khuôn mặt cho %s học sinh (lỗi %s)", updated, failed
+            )
+    except Exception as exc:  # noqa: BLE001 - preload must never stop startup
+        logger.warning("Lỗi tải trước mô hình AI: %s", exc)
 
 
 @asynccontextmanager
@@ -225,12 +255,9 @@ def auth_status() -> dict[str, str]:
 def health() -> dict[str, object]:
     """Expose runtime readiness without leaking student data."""
 
-    global _health_engine
-    if _health_engine is None:
-        _health_engine = FaceRecognitionEngine()
     return {
         "status": "ok",
-        "face_detection": _health_engine.detection_available,
+        "face_detection": shared_face_engine().detection_available,
         "secure_transport_only": settings.secure_transport_only,
     }
 
@@ -258,9 +285,7 @@ async def _read_face_image(
         )
     try:
         frame = await asyncio.to_thread(decode_jpeg, content)
-        embedding = await asyncio.to_thread(
-            FaceRecognitionEngine().registration_embedding, frame
-        )
+        embedding = await asyncio.to_thread(_registration_embedding, frame)
     except FaceEngineUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
@@ -584,6 +609,8 @@ async def video_stream(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    # ``?overlay=server`` keeps the old annotated-JPEG mode for debugging.
+    server_overlay = websocket.query_params.get("overlay") == "server"
     processor = StreamProcessor(storage)
     try:
         while True:
@@ -602,7 +629,9 @@ async def video_stream(websocket: WebSocket) -> None:
                 continue
             raw_jpeg = _websocket_frame_bytes(message)
             with SessionLocal() as db:
-                result = await asyncio.to_thread(processor.process, raw_jpeg, db)
+                result = await asyncio.to_thread(
+                    processor.process, raw_jpeg, db, server_overlay
+                )
             await websocket.send_json(result.to_dict())
     except WebSocketDisconnect:
         return

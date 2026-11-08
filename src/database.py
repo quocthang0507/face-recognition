@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -19,11 +19,27 @@ connect_args = (
     {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
 )
 engine = create_engine(settings.database_url, connect_args=connect_args)
+
+_is_sqlite_file = settings.database_url.startswith("sqlite") and (
+    ":memory:" not in settings.database_url
+)
+if _is_sqlite_file:
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, _record) -> None:
+        """WAL lets the camera pipeline write while the dashboard reads."""
+
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 # Columns added after the first release. ``create_all`` never alters existing
 # tables, so older classroom.db files are upgraded in place on startup.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "students": {"embedding_model": "VARCHAR(40)"},
     "sessions": {"title": "VARCHAR(120)"},
     "session_students": {
         "checked_in_at": "DATETIME",

@@ -8,13 +8,29 @@ const state = {
   cameraTimer: null,
   enabledBehaviors: new Set(["SLEEPING", "HAND_ON_FACE", "CHEATING", "TALKING"]),
   videoDevices: [],
+  // Adaptive sending: round-trip time drives the upload resolution.
+  sentAt: 0,
+  rttEma: null,
+  maxDim: 640,
+  framesSinceAdapt: 0,
+  // Client-side overlay drawn over the live <video>.
+  lastPayload: null,
+  lastPayloadAt: 0,
+  alertLabels: new Map(),
 };
 
 const $ = (selector) => document.querySelector(selector);
 const camera = $("#camera");
 const canvas = $("#capture-canvas");
 const frame = $("#processed-frame");
+const overlay = $("#overlay-canvas");
 const THEME_STORAGE_KEY = "smart-classroom-theme";
+// ?overlay=server keeps the legacy mode where the server returns an annotated JPEG.
+const SERVER_OVERLAY = new URLSearchParams(location.search).get("overlay") === "server";
+const UPLOAD_SIZES = [640, 480, 360];
+const OVERLAY_STALE_MS = 1500;
+const ALERT_LABEL_MS = 3000;
+const FRAME_TIMEOUT_MS = 5000;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -43,6 +59,7 @@ function toast(message, error = false) {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
+  overlayColors = null; // re-read palette tokens for the canvas overlay
   localStorage.setItem(THEME_STORAGE_KEY, theme);
   const select = $("#theme-select-modal");
   if (select) {
@@ -136,6 +153,10 @@ function stopCamera() {
   }
   camera.srcObject = null;
   state.waitingFrame = false;
+  state.rttEma = null;
+  state.lastPayload = null;
+  state.alertLabels.clear();
+  clearOverlay();
   frame.removeAttribute("src");
   frame.style.display = "none";
   $("#camera-placeholder").style.display = "grid";
@@ -149,7 +170,8 @@ function stopCamera() {
 function connectSocket() {
   if (!state.stream) return;
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  state.socket = new WebSocket(`${protocol}://${location.host}/ws`);
+  const query = SERVER_OVERLAY ? "?overlay=server" : "";
+  state.socket = new WebSocket(`${protocol}://${location.host}/ws${query}`);
   state.socket.binaryType = "arraybuffer";
   state.socket.onopen = () => {
     setSocketStatus(true);
@@ -168,8 +190,16 @@ function connectSocket() {
       renderBehaviorOptions();
       return;
     }
-    frame.src = `data:image/jpeg;base64,${payload.image}`;
-    frame.style.display = "block";
+    recordRoundTrip();
+    if (payload.image) {
+      frame.src = `data:image/jpeg;base64,${payload.image}`;
+      frame.style.display = "block";
+    } else {
+      state.lastPayload = payload;
+      state.lastPayloadAt = performance.now();
+      rememberAlertLabels(payload);
+      drawOverlay();
+    }
     const errors = [...new Set(payload.errors || [])];
     $("#engine-message").textContent = errors.join(" ");
     for (const alert of payload.alerts || []) addAlert(alert);
@@ -185,6 +215,7 @@ function connectSocket() {
   };
   state.socket.onclose = () => {
     state.socket = null;
+    clearOverlay();
     setSocketStatus(false);
     clearInterval(state.cameraTimer);
     state.cameraTimer = null;
@@ -221,11 +252,15 @@ function sendBehaviorConfig() {
 }
 
 function sendFrame() {
-  if (!state.socket || state.socket.readyState !== WebSocket.OPEN || state.waitingFrame) return;
-  if (!camera.videoWidth) return;
+  if (performance.now() - state.lastPayloadAt > OVERLAY_STALE_MS) clearOverlay();
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return;
+  if (state.waitingFrame && performance.now() - state.sentAt > FRAME_TIMEOUT_MS) {
+    state.waitingFrame = false; // response lost: do not stall the stream forever
+  }
+  if (state.waitingFrame || document.hidden || !camera.videoWidth) return;
 
-  // Downscale frame to a maximum width of 640px to optimize network and CPU usage
-  const maxDim = 640;
+  // Downscale before upload; the width adapts to the measured round-trip time.
+  const maxDim = state.maxDim;
   let w = camera.videoWidth;
   let h = camera.videoHeight;
   if (w > maxDim) {
@@ -236,6 +271,7 @@ function sendFrame() {
   canvas.height = h;
   canvas.getContext("2d").drawImage(camera, 0, 0, w, h);
   state.waitingFrame = true;
+  state.sentAt = performance.now();
   canvas.toBlob((blob) => {
     if (!blob || !state.socket || state.socket.readyState !== WebSocket.OPEN) {
       state.waitingFrame = false;
@@ -245,9 +281,122 @@ function sendFrame() {
   }, "image/jpeg", 0.70);
 }
 
+function recordRoundTrip() {
+  const rtt = performance.now() - state.sentAt;
+  state.rttEma = state.rttEma === null ? rtt : state.rttEma * 0.8 + rtt * 0.2;
+  state.framesSinceAdapt += 1;
+  if (state.framesSinceAdapt >= 30) {
+    state.framesSinceAdapt = 0;
+    const index = UPLOAD_SIZES.indexOf(state.maxDim);
+    if (state.rttEma > 350 && index < UPLOAD_SIZES.length - 1) state.maxDim = UPLOAD_SIZES[index + 1];
+    else if (state.rttEma < 150 && index > 0) state.maxDim = UPLOAD_SIZES[index - 1];
+  }
+  setSocketStatus(true);
+}
+
+let overlayColors = null;
+
+function readOverlayColors() {
+  const styles = getComputedStyle(document.documentElement);
+  const light = document.documentElement.dataset.theme === "light";
+  overlayColors = {
+    known: styles.getPropertyValue("--green").trim() || "#38e6a1",
+    unknown: styles.getPropertyValue("--amber").trim() || "#ffbd4a",
+    alert: styles.getPropertyValue("--red").trim() || "#ff5f77",
+    // Label text sits on a solid pill of the box color.
+    labelText: light ? "#ffffff" : "#04121b",
+    font: `600 13px ${styles.fontFamily || "system-ui, sans-serif"}`,
+  };
+}
+
+function rememberAlertLabels(payload) {
+  const now = performance.now();
+  for (const behavior of payload.behaviors || []) {
+    if (behavior.alerts && behavior.alerts.length) {
+      state.alertLabels.set(behavior.track_id, { types: behavior.alerts, until: now + ALERT_LABEL_MS });
+    }
+  }
+  for (const [trackId, label] of state.alertLabels) {
+    if (label.until < now) state.alertLabels.delete(trackId);
+  }
+}
+
+function clearOverlay() {
+  const context = overlay.getContext("2d");
+  context.clearRect(0, 0, overlay.width, overlay.height);
+}
+
+function drawLabel(context, text, x, y, color, above) {
+  context.font = overlayColors.font;
+  const width = context.measureText(text).width + 12;
+  const height = 20;
+  const top = above ? Math.max(0, y - height - 3) : y + 3;
+  context.fillStyle = color;
+  context.beginPath();
+  if (context.roundRect) context.roundRect(x, top, width, height, 5);
+  else context.rect(x, top, width, height);
+  context.fill();
+  context.fillStyle = overlayColors.labelText;
+  context.textBaseline = "middle";
+  context.fillText(text, x + 6, top + height / 2 + 0.5);
+}
+
+function drawOverlay() {
+  const payload = state.lastPayload;
+  if (!payload || !payload.frame_size) return;
+  if (!overlayColors) readOverlayColors();
+  const ratio = window.devicePixelRatio || 1;
+  const cssWidth = overlay.clientWidth;
+  const cssHeight = overlay.clientHeight;
+  if (overlay.width !== Math.round(cssWidth * ratio) || overlay.height !== Math.round(cssHeight * ratio)) {
+    overlay.width = Math.round(cssWidth * ratio);
+    overlay.height = Math.round(cssHeight * ratio);
+  }
+  const context = overlay.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, cssWidth, cssHeight);
+
+  // The <video> uses object-fit: cover, so map frame pixels the same way.
+  const { width: frameWidth, height: frameHeight } = payload.frame_size;
+  const scale = Math.max(cssWidth / frameWidth, cssHeight / frameHeight);
+  const offsetX = (cssWidth - frameWidth * scale) / 2;
+  const offsetY = (cssHeight - frameHeight * scale) / 2;
+  const toScreen = (box) => ({
+    x: offsetX + box.x * scale,
+    y: offsetY + box.y * scale,
+    width: box.width * scale,
+    height: box.height * scale,
+  });
+
+  context.lineWidth = 2;
+  for (const face of payload.faces || []) {
+    const box = toScreen(face.box);
+    const color = face.student_id ? overlayColors.known : overlayColors.unknown;
+    context.strokeStyle = color;
+    context.strokeRect(box.x, box.y, box.width, box.height);
+    const label = face.student_id ? `${face.fullname} ${Math.round(face.confidence)}%` : "Không rõ";
+    drawLabel(context, label, box.x, box.y, color, true);
+  }
+  for (const behavior of payload.behaviors || []) {
+    const label = state.alertLabels.get(behavior.track_id);
+    if (!label) continue;
+    const box = toScreen(behavior.box);
+    const text = label.types.map((type) => BEHAVIOR_TEXT[type] || type).join(", ");
+    drawLabel(context, text, box.x, box.y + box.height, overlayColors.alert, false);
+  }
+}
+
+const BEHAVIOR_TEXT = {
+  SLEEPING: "Ngủ gục",
+  HAND_ON_FACE: "Chống tay",
+  CHEATING: "Quay cóp",
+  TALKING: "Nói chuyện",
+};
+
 function setSocketStatus(online) {
   const item = $("#socket-status");
-  item.textContent = online ? "Camera trực tuyến" : "Camera ngoại tuyến";
+  const latency = online && state.rttEma !== null ? ` · ${Math.round(state.rttEma)} ms` : "";
+  item.textContent = online ? `Camera trực tuyến${latency}` : "Camera ngoại tuyến";
   item.className = `status-pill ${online ? "online" : "offline"}`;
 }
 
@@ -955,6 +1104,11 @@ const setupOutsideClickClose = (modalSelector) => {
 setupOutsideClickClose("#settings-modal");
 setupOutsideClickClose("#picker-modal");
 setupOutsideClickClose("#report-modal");
+window.addEventListener("resize", () => drawOverlay());
+document.addEventListener("visibilitychange", () => {
+  // Frames are not sent while the tab is hidden; drop the stale overlay.
+  if (document.hidden) clearOverlay();
+});
 $("#logout-button").addEventListener("click", async () => {
   stopCamera();
   await api("/api/auth/logout", { method: "POST" });

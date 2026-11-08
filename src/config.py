@@ -20,6 +20,13 @@ def _as_int(name: str, default: int) -> int:
         return default
 
 
+def _as_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime settings for the classroom application."""
@@ -74,8 +81,27 @@ class Settings:
         default_factory=lambda: _as_int("FACE_APP_LATE_AFTER_MINUTES", 15)
     )
     duplicate_face_confidence: float = 90.0
+    # Performance tuning (phase 1 of docs/architecture-proposal.md).
+    behavior_fps: float = field(
+        default_factory=lambda: _as_float("FACE_APP_BEHAVIOR_FPS", 8.0)
+    )
+    hand_fps: float = field(
+        default_factory=lambda: _as_float("FACE_APP_HAND_FPS", 3.0)
+    )
+    max_faces: int = field(default_factory=lambda: _as_int("FACE_APP_MAX_FACES", 8))
+    embedding_detector: str = field(
+        default_factory=lambda: os.getenv("FACE_APP_EMBED_DETECTOR", "skip")
+    )
+    cache_ttl_seconds: float = 5.0
+    profile: bool = field(default_factory=lambda: _as_bool("FACE_APP_PROFILE"))
     login_max_failures: int = 5
     login_lockout_seconds: int = 5 * 60
+
+    @property
+    def embedding_model_id(self) -> str:
+        """Identifier of the embedding pipeline; vectors from others are stale."""
+
+        return f"Facenet:{self.embedding_detector}"
 
     @property
     def uses_default_credentials(self) -> bool:

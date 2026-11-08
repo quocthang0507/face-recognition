@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
@@ -67,7 +68,9 @@ class DeepFaceEmbeddingProvider:
         representations = self._deepface.represent(
             img_path=image,
             model_name="Facenet",
-            detector_backend="opencv",
+            # The crop already comes from a face detector; running another
+            # detector inside DeepFace doubles the cost for no benefit.
+            detector_backend=settings.embedding_detector,
             enforce_detection=False,
         )
         if not representations:
@@ -152,9 +155,72 @@ def best_embedding_match(
     return best_student, best_confidence
 
 
+@dataclass(frozen=True)
+class Gallery:
+    """Registered face embeddings as one L2-normalised matrix.
+
+    Built once per change of the student list instead of decoding JSON and
+    looping in Python for every face on every recognition pass.
+    """
+
+    students: tuple[Student, ...]
+    matrix: Any
+
+    @classmethod
+    def build(cls, students: Sequence[Student]) -> "Gallery":
+        """Create a gallery from students that have a stored embedding."""
+
+        return cls.from_pairs(
+            [
+                (student, embedding)
+                for student in students
+                if (embedding := deserialize_embedding(student.embedding))
+            ]
+        )
+
+    @classmethod
+    def from_pairs(
+        cls, pairs: Sequence[tuple[Student, Sequence[float]]]
+    ) -> "Gallery":
+        """Create a gallery from (student, embedding) pairs."""
+
+        import numpy as np
+
+        if not pairs:
+            return cls((), None)
+        # Vectors from another model have another size; keep the majority.
+        dimension = Counter(len(embedding) for _, embedding in pairs).most_common(1)
+        size = dimension[0][0]
+        kept = [pair for pair in pairs if len(pair[1]) == size]
+        matrix = np.asarray([embedding for _, embedding in kept], dtype=np.float32)
+        norms = np.linalg.norm(matrix, axis=1)
+        valid = norms > 0
+        matrix = matrix[valid] / norms[valid, None]
+        students = tuple(student for (student, _), ok in zip(kept, valid) if ok)
+        return cls(students, matrix if students else None)
+
+    def scores(self, embeddings: Sequence[Sequence[float] | None]) -> Any:
+        """Return cosine confidence (0-100) for every face x student pair."""
+
+        import numpy as np
+
+        result = np.zeros((len(embeddings), len(self.students)), dtype=np.float32)
+        if self.matrix is None:
+            return result
+        size = self.matrix.shape[1]
+        for row, embedding in enumerate(embeddings):
+            if not embedding or len(embedding) != size:
+                continue
+            query = np.asarray(embedding, dtype=np.float32)
+            norm = float(np.linalg.norm(query))
+            if norm:
+                result[row] = np.clip(self.matrix @ (query / norm), 0.0, 1.0) * 100
+        return result
+
+
 def assign_unique_identities(
     embeddings: Sequence[Sequence[float] | None],
-    known_embeddings: Sequence[tuple[Student, Sequence[float]]],
+    known_embeddings: "Gallery | Sequence[tuple[Student, Sequence[float]]]",
     minimum_confidence: float,
 ) -> list[tuple[Student | None, float]]:
     """Match faces to students so one student is never assigned to two faces.
@@ -164,30 +230,33 @@ def assign_unique_identities(
     same student.
     """
 
-    pairs: list[tuple[float, int, int]] = []
-    best_scores = [0.0] * len(embeddings)
-    for face_index, embedding in enumerate(embeddings):
-        if not embedding:
-            continue
-        for student_index, (_, known) in enumerate(known_embeddings):
-            try:
-                confidence = max(0.0, cosine_similarity(embedding, known) * 100)
-            except ValueError:
-                continue
-            best_scores[face_index] = max(best_scores[face_index], confidence)
-            if confidence >= minimum_confidence:
-                pairs.append((confidence, face_index, student_index))
+    import numpy as np
+
+    gallery = (
+        known_embeddings
+        if isinstance(known_embeddings, Gallery)
+        else Gallery.from_pairs(known_embeddings)
+    )
+    scores = gallery.scores(embeddings)
+    best_scores = scores.max(axis=1) if scores.size else np.zeros(len(embeddings))
     results: list[tuple[Student | None, float]] = [
-        (None, score) for score in best_scores
+        (None, float(score)) for score in best_scores
     ]
+    candidates = np.argwhere(scores >= minimum_confidence)
+    order = sorted(
+        candidates.tolist(), key=lambda pair: scores[pair[0], pair[1]], reverse=True
+    )
     used_faces: set[int] = set()
     used_students: set[int] = set()
-    for confidence, face_index, student_index in sorted(pairs, reverse=True):
+    for face_index, student_index in order:
         if face_index in used_faces or student_index in used_students:
             continue
         used_faces.add(face_index)
         used_students.add(student_index)
-        results[face_index] = (known_embeddings[student_index][0], confidence)
+        results[face_index] = (
+            gallery.students[student_index],
+            float(scores[face_index, student_index]),
+        )
     return results
 
 
@@ -247,6 +316,7 @@ class FaceRecognitionEngine:
         students: Sequence[Student],
         tracked_boxes: Sequence[TrackedBox] | None = None,
         now: float | None = None,
+        gallery: Gallery | None = None,
     ) -> tuple[list[FaceMatch], bool]:
         """Recognize faces at the configured interval and reuse cached matches."""
 
@@ -262,7 +332,9 @@ class FaceRecognitionEngine:
             else [TrackedBox(0, box) for box in self.locator.locate(frame)]
         )
         boxes = [candidate.box for candidate in candidates]
-        if not boxes or not students:
+        if gallery is None:
+            gallery = Gallery.build(students)
+        if not boxes or not gallery.students:
             self._cached_matches = [
                 FaceMatch(
                     candidate.box,
@@ -277,11 +349,6 @@ class FaceRecognitionEngine:
             self._cache_tracked_matches()
             return self._cached_matches, True
         provider = self._embedding_provider()
-        known_embeddings = []
-        for student in students:
-            emb = deserialize_embedding(student.embedding)
-            if emb:
-                known_embeddings.append((student, emb))
         embeddings: list[list[float] | None] = []
         for candidate in candidates:
             try:
@@ -289,7 +356,7 @@ class FaceRecognitionEngine:
             except (ValueError, RuntimeError):
                 embeddings.append(None)
         identities = assign_unique_identities(
-            embeddings, known_embeddings, settings.recognition_confidence
+            embeddings, gallery, settings.recognition_confidence
         )
         matches: list[FaceMatch] = []
         for candidate, (student, confidence) in zip(candidates, identities):

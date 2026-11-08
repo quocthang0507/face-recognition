@@ -3,22 +3,33 @@
 from __future__ import annotations
 
 import base64
+import time
 from collections import defaultdict
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from functools import lru_cache
+from typing import Any, Generic, Iterable, TypeVar
 
 from sqlalchemy.orm import Session
 
+from . import cache
 from .behavior_engine import BehaviorEngine, FaceBehavior
 from .config import settings
 from .face_engine import (
     FaceEngineUnavailable,
     FaceMatch,
     FaceRecognitionEngine,
+    Gallery,
     closest_match,
 )
 from .models import ClassroomSession
-from .services import BehaviorLogService, ClassroomService, StudentService
+from .services import (
+    BehaviorLogService,
+    ClassroomService,
+    DomainError,
+    StudentService,
+)
 from .storage import PrivateStorage
 from .tracking import TrackedBox
 
@@ -30,24 +41,33 @@ BEHAVIOR_LABELS = {
 }
 
 
+T = TypeVar("T")
+
+
 @dataclass
 class FrameResult:
-    """Processed JPEG and JSON metadata returned to the browser."""
+    """Frame metadata returned to the browser.
 
-    image_base64: str
+    The browser draws boxes and labels itself on top of the live video, so the
+    annotated JPEG (``image_base64``) is only produced in the optional
+    ``?overlay=server`` debug mode.
+    """
+
+    image_base64: str | None
     faces: list[dict[str, object]]
     behaviors: list[dict[str, object]]
     alerts: list[dict[str, object]]
     errors: list[str]
     attendance: list[dict[str, object]] = field(default_factory=list)
     session_id: int | None = None
+    frame_size: tuple[int, int] | None = None
+    timings: dict[str, float] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable frame payload."""
 
-        return {
+        payload: dict[str, object] = {
             "type": "frame",
-            "image": self.image_base64,
             "faces": self.faces,
             "behaviors": self.behaviors,
             "alerts": self.alerts,
@@ -55,6 +75,80 @@ class FrameResult:
             "attendance": self.attendance,
             "session_id": self.session_id,
         }
+        if self.image_base64 is not None:
+            payload["image"] = self.image_base64
+        if self.frame_size is not None:
+            width, height = self.frame_size
+            payload["frame_size"] = {"width": width, "height": height}
+        if self.timings is not None:
+            payload["timings"] = self.timings
+        return payload
+
+
+class StageTimer:
+    """Measure pipeline stages in milliseconds (``FACE_APP_PROFILE=true``)."""
+
+    def __init__(self, enabled: bool | None = None) -> None:
+        self.enabled = settings.profile if enabled is None else enabled
+        self._started = time.perf_counter()
+        self._stages: dict[str, float] = {}
+
+    @contextmanager
+    def stage(self, name: str) -> Iterator[None]:
+        """Time one block when profiling is enabled."""
+
+        if not self.enabled:
+            yield
+            return
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = (time.perf_counter() - started) * 1000
+            self._stages[name] = round(self._stages.get(name, 0.0) + elapsed, 2)
+
+    def result(self) -> dict[str, float]:
+        """Return stage timings plus the total server time."""
+
+        total = round((time.perf_counter() - self._started) * 1000, 2)
+        return {**self._stages, "total": total}
+
+
+class VersionedCache(Generic[T]):
+    """Keep hot data in memory until it changes or a short TTL expires."""
+
+    def __init__(
+        self,
+        name: str,
+        loader: Callable[..., T],
+        ttl: float | None = None,
+    ) -> None:
+        self.name = name
+        self.loader = loader
+        self.ttl = settings.cache_ttl_seconds if ttl is None else ttl
+        self._value: T | None = None
+        self._version: int | None = None
+        self._loaded_at = 0.0
+
+    def get(self, *args: Any, now: float | None = None) -> T:
+        """Return the cached value, reloading it with ``loader(*args)`` if stale."""
+
+        current_time = time.monotonic() if now is None else now
+        current_version = cache.version(self.name)
+        stale = (
+            self._version != current_version
+            or current_time - self._loaded_at >= self.ttl
+        )
+        if stale:
+            self._value = self.loader(*args)
+            self._version = current_version
+            self._loaded_at = current_time
+        return self._value  # type: ignore[return-value]
+
+    def invalidate(self) -> None:
+        """Force a reload on the next access."""
+
+        self._version = None
 
 
 class AttendanceStabilizer:
@@ -103,6 +197,13 @@ class StreamProcessor:
         self.behavior_engine = behavior_engine or BehaviorEngine()
         self.attendance = AttendanceStabilizer()
         self._session_id: int | None = None
+        # Avoid two SQLite queries and a JSON decode of every embedding per frame.
+        self._gallery = VersionedCache(
+            "students", lambda db: Gallery.build(StudentService.list_all(db))
+        )
+        self._active_session = VersionedCache(
+            "sessions", ClassroomService.get_active_session
+        )
 
     @property
     def enabled_behaviors(self) -> frozenset[str]:
@@ -115,17 +216,24 @@ class StreamProcessor:
 
         self.behavior_engine.set_enabled_behaviors(behavior_types)
 
-    def process(self, raw_jpeg: bytes, db: Session) -> FrameResult:
-        """Decode, analyze, annotate and encode one camera frame."""
+    def process(
+        self, raw_jpeg: bytes, db: Session, server_overlay: bool = False
+    ) -> FrameResult:
+        """Decode and analyze one camera frame; annotate it only on request."""
 
-        frame = decode_jpeg(raw_jpeg)
-        students = StudentService.list_all(db)
+        timer = StageTimer()
+        with timer.stage("decode"):
+            frame = decode_jpeg(raw_jpeg)
+        with timer.stage("cache"):
+            gallery = self._gallery.get(db)
+            active_session = self._active_session.get(db)
         errors: list[str] = []
-        active_session = ClassroomService.get_active_session(db)
-        if active_session is not None:
-            behaviors = self.behavior_engine.analyze(frame)
-        else:
-            behaviors = []
+        with timer.stage("behavior"):
+            behaviors = (
+                self.behavior_engine.analyze(frame)
+                if active_session is not None
+                else []
+            )
         tracked_boxes = [
             TrackedBox(behavior.track_id, behavior.box) for behavior in behaviors
         ]
@@ -135,11 +243,13 @@ class StreamProcessor:
             tracked_boxes if (self.behavior_engine.available and behaviors) else None
         )
         try:
-            matches, refreshed = self.face_engine.recognize_if_due(
-                frame,
-                students,
-                tracked_boxes=use_tracked_boxes,
-            )
+            with timer.stage("recognize"):
+                matches, refreshed = self.face_engine.recognize_if_due(
+                    frame,
+                    list(gallery.students),
+                    tracked_boxes=use_tracked_boxes,
+                    gallery=gallery,
+                )
         except FaceEngineUnavailable as exc:
             matches, refreshed = [], False
             errors.append(str(exc))
@@ -153,22 +263,39 @@ class StreamProcessor:
         checked_in: list[dict[str, object]] = []
         if active_session and refreshed:
             names = {match.student_id: match.fullname for match in matches}
-            for student_id in self.attendance.observe(matches):
-                if ClassroomService.mark_present(db, active_session.id, student_id):
-                    checked_in.append(
-                        {"student_id": student_id, "fullname": names.get(student_id)}
-                    )
-        alerts = self._save_alerts(frame, behaviors, matches, active_session, db)
-        draw_overlay(frame, matches, behaviors)
-        encoded = encode_jpeg(frame)
+            try:
+                with timer.stage("attendance"):
+                    for student_id in self.attendance.observe(matches):
+                        if ClassroomService.mark_present(
+                            db, active_session.id, student_id
+                        ):
+                            checked_in.append(
+                                {
+                                    "student_id": student_id,
+                                    "fullname": names.get(student_id),
+                                }
+                            )
+            except DomainError:
+                # The cached lesson was finished by another worker process.
+                self._active_session.invalidate()
+        with timer.stage("alerts"):
+            alerts = self._save_alerts(frame, behaviors, matches, active_session, db)
+        image_base64: str | None = None
+        if server_overlay:
+            with timer.stage("overlay"):
+                draw_overlay(frame, matches, behaviors)
+                image_base64 = base64.b64encode(encode_jpeg(frame)).decode("ascii")
+        height, width = frame.shape[:2]
         return FrameResult(
-            image_base64=base64.b64encode(encoded).decode("ascii"),
+            image_base64=image_base64,
             faces=[match.to_dict() for match in matches],
             behaviors=[behavior.to_dict() for behavior in behaviors],
             alerts=alerts,
             errors=errors,
             attendance=checked_in,
             session_id=current_session_id,
+            frame_size=(width, height),
+            timings=timer.result(),
         )
 
     def _save_alerts(
@@ -215,6 +342,25 @@ class StreamProcessor:
                     alert["snapshot_url"] = f"/api/snapshots/{snapshot_path}"
                 alerts.append(alert)
         return alerts
+
+
+@lru_cache(maxsize=1)
+def _overlay_font() -> Any:
+    """Load the Unicode overlay font once instead of on every frame."""
+
+    from PIL import ImageFont
+
+    for candidate in (
+        "Arial.ttf",
+        "arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "DejaVuSans.ttf",
+    ):
+        try:
+            return ImageFont.truetype(candidate, 15)
+        except OSError:
+            continue
+    return ImageFont.load_default()
 
 
 def decode_jpeg(content: bytes) -> Any:
@@ -293,19 +439,13 @@ def draw_overlay(
             )
 
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
 
         # Convert to PIL RGB for Unicode drawing
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(pil_img)
 
-        try:
-            font = ImageFont.truetype("Arial.ttf", 15)
-        except OSError:
-            try:
-                font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 15)
-            except OSError:
-                font = ImageFont.load_default()
+        font = _overlay_font()
 
         for match in matches:
             box = match.box

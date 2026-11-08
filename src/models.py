@@ -40,6 +40,7 @@ class Student(Base):
     student_code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     fullname: Mapped[str] = mapped_column(String(100))
     embedding: Mapped[str] = mapped_column(Text)
+    embedding_model: Mapped[str | None] = mapped_column(String(40), nullable=True)
     avatar_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now

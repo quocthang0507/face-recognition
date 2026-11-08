@@ -6,9 +6,10 @@ import math
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Sequence
 
+from .config import settings
 from .tracking import BoundingBox, CentroidBoxTracker
 
 Point = tuple[float, float]
@@ -128,6 +129,22 @@ class DetectorContext:
     roll: float
     hand_face_distance: float
     face_count: int
+
+
+class RateLimiter:
+    """Allow an expensive step to run at most ``fps`` times per second."""
+
+    def __init__(self, fps: float) -> None:
+        self.interval = 1.0 / fps if fps > 0 else 0.0
+        self._last_run = -math.inf
+
+    def due(self, now: float) -> bool:
+        """Return true (and record the run) when the next run is allowed."""
+
+        if now - self._last_run + 1e-9 < self.interval:
+            return False
+        self._last_run = now
+        return True
 
 
 @dataclass
@@ -269,6 +286,11 @@ class FaceBehavior:
             "alerts": list(self.alerts),
         }
 
+    def without_alerts(self) -> "FaceBehavior":
+        """Return a copy reused between analysis runs that emits no new alert."""
+
+        return replace(self, alerts=())
+
 
 class BehaviorEngine:
     """Extract MediaPipe landmarks and run each registered detector."""
@@ -277,6 +299,9 @@ class BehaviorEngine:
         self,
         detectors: Sequence[BehaviorDetector] | None = None,
         enabled_behaviors: Iterable[str] | None = None,
+        behavior_fps: float | None = None,
+        hand_fps: float | None = None,
+        max_faces: int | None = None,
     ) -> None:
         self.detectors = list(
             detectors
@@ -293,17 +318,29 @@ class BehaviorEngine:
         self._face_mesh: Any | None = None
         self._hands: Any | None = None
         self._tracker = CentroidBoxTracker()
+        # Behavior rules need 2-3 s of evidence, so analysing every camera frame
+        # wastes CPU. Results are reused between scheduled runs.
+        self._behavior_rate = RateLimiter(
+            settings.behavior_fps if behavior_fps is None else behavior_fps
+        )
+        self._hand_rate = RateLimiter(
+            settings.hand_fps if hand_fps is None else hand_fps
+        )
+        self._last_results: list[FaceBehavior] = []
+        self._last_hands: list[list[Point]] = []
+        face_limit = max(1, max_faces or settings.max_faces)
         try:
             import mediapipe as mp
 
+            # Iris refinement is not used by any detector and costs extra time.
             self._face_mesh = mp.solutions.face_mesh.FaceMesh(
-                max_num_faces=8,
-                refine_landmarks=True,
+                max_num_faces=face_limit,
+                refine_landmarks=False,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,
             )
             self._hands = mp.solutions.hands.Hands(
-                max_num_hands=8,
+                max_num_hands=face_limit,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,
             )
@@ -348,6 +385,9 @@ class BehaviorEngine:
 
         if not self.available:
             return []
+        current_time = time.monotonic() if now is None else now
+        if not self._behavior_rate.due(current_time):
+            return [behavior.without_alerts() for behavior in self._last_results]
         try:
             import cv2
         except ImportError:
@@ -355,13 +395,15 @@ class BehaviorEngine:
         height, width = frame.shape[:2]
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         face_result = self._face_mesh.process(rgb_frame)
-        hands: list[list[Point]] = []
-        if "HAND_ON_FACE" in self._enabled_behaviors:
+        if "HAND_ON_FACE" not in self._enabled_behaviors:
+            self._last_hands = []
+        elif self._hand_rate.due(current_time):
             hand_result = self._hands.process(rgb_frame)
-            hands = [
+            self._last_hands = [
                 [(point.x * width, point.y * height) for point in landmarks.landmark]
                 for landmarks in hand_result.multi_hand_landmarks or []
             ]
+        hands = self._last_hands
         faces = face_result.multi_face_landmarks or []
         face_points = [
             [(point.x * width, point.y * height) for point in face.landmark]
@@ -370,7 +412,6 @@ class BehaviorEngine:
         tracked_boxes = self._tracker.update(
             [_face_box(points, width, height) for points in face_points]
         )
-        current_time = time.monotonic() if now is None else now
         results: list[FaceBehavior] = []
         for points, tracked_box in zip(face_points, tracked_boxes):
             box = tracked_box.box
@@ -427,6 +468,7 @@ class BehaviorEngine:
                     alerts,
                 )
             )
+        self._last_results = results
         return results
 
 

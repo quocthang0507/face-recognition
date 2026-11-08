@@ -14,6 +14,7 @@ Hệ thống ứng dụng Trí tuệ Nhân tạo (AI) và Thị giác Máy tính
     *   Đặt tên buổi học, xem **tổng kết khi kết thúc phiên**, **lịch sử phiên** và **xuất bảng điểm danh CSV** (mở được bằng Excel).
     *   Cập nhật ảnh khuôn mặt, xóa học sinh, chặn đăng ký trùng khuôn mặt, cảnh báo học sinh chưa có ảnh.
     *   Chi tiết rà soát và quy trình: [docs/review-2026-11.md](docs/review-2026-11.md).
+    *   Đề xuất nâng cấp kiến trúc hiệu năng: [docs/architecture-proposal.md](docs/architecture-proposal.md).
 *   **Quản lý phiên gọi ngẫu nhiên (Random Student Picker)**:
     *   Hỗ trợ giáo viên chọn ngẫu nhiên một học sinh trong danh sách những người có mặt để trả bài (không gọi học sinh vắng).
     *   Tự động lưu trạng thái đã gọi/chưa gọi trong phiên học hiện tại để tránh trùng lặp.
@@ -155,7 +156,14 @@ Quy trình nghiệm thu với người thật và công cụ preview chỉ số 
 python -m src.manual_verification
 ```
 
-### 7. Log MediaPipe trên Terminal
+### 7. Đo hiệu năng
+Chạy pipeline với video mẫu (trên bản sao dữ liệu, không ảnh hưởng CSDL thật):
+```bash
+python -m src.benchmark --video lop_mau.mp4 --session --data-dir src/data
+```
+Bật `FACE_APP_PROFILE=true` để mỗi khung WebSocket kèm thời gian xử lý từng bước. Các biến tinh chỉnh (`FACE_APP_BEHAVIOR_FPS`, `FACE_APP_HAND_FPS`, `FACE_APP_MAX_FACES`, `FACE_APP_EMBED_DETECTOR`) được mô tả trong [docs/architecture-proposal.md](docs/architecture-proposal.md). Thêm `?overlay=server` vào địa chỉ Dashboard để quay lại chế độ máy chủ vẽ khung hình (gỡ lỗi).
+
+### 8. Log MediaPipe trên Terminal
 Khi bật camera, MediaPipe có thể ghi các dòng khởi tạo native như:
 ```text
 WARNING: All log messages before absl::InitializeLog() is called are written to STDERR

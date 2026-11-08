@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, joinedload
 
+from . import cache
 from .config import settings
 from .models import (
     BehaviorLog,
@@ -100,6 +101,7 @@ class StudentService:
             student_code=normalized_code,
             fullname=normalized_name,
             embedding=serialize_embedding(embedding),
+            embedding_model=settings.embedding_model_id if embedding else None,
             avatar_path=avatar_path,
         )
         db.add(student)
@@ -118,6 +120,7 @@ class StudentService:
             )
         db.commit()
         db.refresh(student)
+        cache.bump("students")
         return student
 
     @staticmethod
@@ -141,10 +144,23 @@ class StudentService:
         student = StudentService.get(db, student_id)
         previous_avatar = student.avatar_path
         student.embedding = serialize_embedding(embedding)
+        student.embedding_model = settings.embedding_model_id
         student.avatar_path = avatar_path
         db.commit()
         db.refresh(student)
+        cache.bump("students")
         return student, previous_avatar
+
+    @staticmethod
+    def replace_embedding(
+        db: Session, student: Student, embedding: Sequence[float]
+    ) -> None:
+        """Store a recomputed embedding for the current model, keeping the avatar."""
+
+        student.embedding = serialize_embedding(embedding)
+        student.embedding_model = settings.embedding_model_id
+        db.commit()
+        cache.bump("students")
 
     @staticmethod
     def delete(db: Session, student_id: int, storage: PrivateStorage) -> None:
@@ -159,6 +175,7 @@ class StudentService:
         )
         db.delete(student)
         db.commit()
+        cache.bump("students")
         if avatar:
             storage.delete_avatar(avatar)
 
@@ -223,6 +240,7 @@ class ClassroomService:
                 )
             )
         db.commit()
+        cache.bump("sessions")
         return session
 
     @staticmethod
@@ -264,6 +282,7 @@ class ClassroomService:
         classroom_session.status = "FINISHED"
         classroom_session.finished_at = utc_now()
         db.commit()
+        cache.bump("sessions")
         return classroom_session
 
     @staticmethod
