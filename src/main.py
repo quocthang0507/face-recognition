@@ -499,7 +499,7 @@ def export_session_csv(
             "Trạng thái",
             "Giờ vào lớp",
             "Hình thức",
-            "Đã gọi trả bài",
+            "Gọi trả bài lúc",
             "Ghi chú",
         ]
     )
@@ -516,7 +516,7 @@ def export_session_csv(
                 {"AUTO": "Camera", "MANUAL": "Giáo viên"}.get(
                     state.attendance_source or "", ""
                 ),
-                "Có" if state.is_called else "",
+                _local_time(state.called_at) if state.called_at else "",
                 state.note or "",
             ]
         )

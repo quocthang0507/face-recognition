@@ -97,6 +97,7 @@ Tài liệu này dùng để theo dõi tiến độ thực hiện và kiểm so�
     - [ ] Kiểm tra nhận dạng khuôn mặt và điểm danh chính xác khi học sinh ngồi trước webcam.
     - [ ] Thử nghiệm gọi học sinh ngẫu nhiên 3-5 lần liên tiếp để đảm bảo không bị trùng lặp và reset hoạt động bình thường.
     - [ ] Mô phỏng các hành vi nhắm mắt ngủ, chống cằm, quay đầu, nói chuyện liên tục để kiểm tra cảnh báo realtime, âm thanh bíp, đọc giọng nói tiếng Việt và cơ chế cooldown 10 giây.
+    - [ ] Kiểm tra chế độ `Chiếu TV` và `Máy tính GV` trên màn hình thật của lớp (mục 5 trong tài liệu nghiệm thu).
 
 ---
 
@@ -121,3 +122,5 @@ Tài liệu này dùng để theo dõi tiến độ thực hiện và kiểm so�
 - [x] Triển khai logic điều chỉnh lại tần suất gửi khung hình camera trực tiếp mà không cần khởi động lại kết nối.
 - [x] Xây dựng Hộp thoại Cài đặt Tập trung (Settings Modal) quản lý nguồn camera, FPS, theme sáng/tối và âm thanh/TTS giọng nói tiếng Việt ở một nơi.
 - [x] Tích hợp bộ chọn giọng đọc TTS (Voice Selector) tiếng Việt/hệ thống, lưu trữ lựa chọn vào `localStorage` và tự động cập nhật giọng đọc khi giáo viên lựa chọn.
+- [x] Tinh chỉnh giao diện cho lớp học: nền đặc, tương phản cao, nút có icon, trạng thái trống có hướng dẫn (Xem [ui-refresh-2026-11.md](ui-refresh-2026-11.md)).
+- [x] Thêm 2 chế độ hiển thị `Máy tính GV` và `Chiếu TV`, che tên học sinh trong cảnh báo khi chiếu (Xem [display-modes.md](display-modes.md)).

@@ -62,3 +62,25 @@ track ID và tổng cảnh báo đã phát hiện.
 ```bash
 python -m src.manual_verification --duration 5 --no-preview
 ```
+
+## 5. Chế độ hiển thị
+
+Thực hiện trên TV hoặc máy chiếu sẽ dùng trong lớp. Hướng dẫn chi tiết ở
+[display-modes.md](display-modes.md).
+
+1. Bật `Chiếu TV`, đứng ở cuối lớp và xác nhận đọc được danh sách lớp, số liệu và
+   tên học sinh được gọi.
+2. Xác nhận không còn thấy các nút đăng ký, xóa học sinh, xuất CSV và nhật ký cảnh
+   báo.
+3. Tạo một cảnh báo hành vi trước camera. Xác nhận thông báo và giọng đọc không
+   nêu tên học sinh, và hình camera không có nhãn hành vi.
+4. Đứng trước camera sau khi đã đăng ký khuôn mặt. Xác nhận khung nhận diện ghi
+   `Đã nhận diện`, không ghi tên học sinh.
+5. Đánh dấu một học sinh vắng kèm lý do. Xác nhận lý do không hiện trong danh sách
+   lớp và báo cáo cuối tiết.
+6. Tải lại trang và xác nhận vẫn ở `Chiếu TV`.
+7. Bật `Máy tính GV` và xác nhận các công cụ quản trị, tên trên khung nhận diện và
+   lý do vắng hiện lại.
+8. Trở lại `Chiếu TV`, để camera điểm danh một học sinh và xác nhận không có thông
+   báo `Đã điểm danh`, không có dòng `Chưa có ảnh khuôn mặt`. Bỏ chọn hai mục trong
+   nhóm `Khi Chiếu TV` của `Cài đặt` và xác nhận chúng hiện lại.

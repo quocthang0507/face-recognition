@@ -42,6 +42,9 @@ src/data/snapshots/*
 *.db
 *.sqlite3
 
+# Test data created by the "dữ liệu thử nghiệm" launch configuration
+src/data-test/
+
 # IDEs and Editors
 .vscode/
 .idea/

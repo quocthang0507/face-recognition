@@ -1,0 +1,23 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "src/templates/index.html"
+        ],
+        "createdAt": "2026-11-08T08:21:23.828Z",
+        "reason": "Claude: #picked-avatar and #processed-frame get src from app.js at runtime and stay display:none until then"
+      },
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-11-08T08:25:10.987Z",
+        "reason": "Claude: Inter is the incumbent font stack; user chose a refinement that keeps the existing identity, and Operate surfaces permit familiar sans faces"
+      }
+    ]
+  }
+}

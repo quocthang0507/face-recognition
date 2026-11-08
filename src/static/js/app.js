@@ -39,7 +39,10 @@ async function api(path, options = {}) {
     headers: { ...(options.headers || {}) },
   });
   if (response.status === 401) {
+    const body = await response.json().catch(() => ({}));
     $("#login-modal").classList.add("visible");
+    // A wrong password is not an expired session: show the server's reason.
+    if (path === "/api/auth/login") throw new Error(body.detail || "Mật khẩu không chính xác");
     throw new Error("Phiên đăng nhập đã hết hạn");
   }
   if (!response.ok) {
@@ -128,7 +131,7 @@ async function startCamera() {
     camera.srcObject = state.stream;
     await camera.play();
     $("#camera-placeholder").style.display = "none";
-    $("#start-camera-button").textContent = "Camera đang bật";
+    $("#start-camera-button .label").textContent = "Camera đang bật";
     $("#start-camera-button").disabled = true;
     $("#stop-camera-button").disabled = false;
     
@@ -160,7 +163,7 @@ function stopCamera() {
   frame.removeAttribute("src");
   frame.style.display = "none";
   $("#camera-placeholder").style.display = "grid";
-  $("#start-camera-button").textContent = "Bật camera";
+  $("#start-camera-button .label").textContent = "Bật camera";
   $("#start-camera-button").disabled = false;
   $("#stop-camera-button").disabled = true;
   $("#engine-message").textContent = "";
@@ -209,7 +212,7 @@ function connectSocket() {
     // Refresh the roster only when the server reports a change instead of
     // polling the API on every frame that contains a recognised face.
     const checkedIn = payload.attendance || [];
-    for (const item of checkedIn) toast(`Đã điểm danh: ${item.fullname || "học sinh"}`);
+    for (const item of checkedIn) announceCheckIn(item);
     const sessionChanged = (payload.session_id || null) !== (state.session ? state.session.id : null);
     if (checkedIn.length || sessionChanged) refreshSession();
   };
@@ -305,7 +308,7 @@ function readOverlayColors() {
     alert: styles.getPropertyValue("--red").trim() || "#ff5f77",
     // Label text sits on a solid pill of the box color.
     labelText: light ? "#ffffff" : "#04121b",
-    font: `600 13px ${styles.fontFamily || "system-ui, sans-serif"}`,
+    font: `600 16px ${styles.fontFamily || "system-ui, sans-serif"}`,
   };
 }
 
@@ -329,7 +332,7 @@ function clearOverlay() {
 function drawLabel(context, text, x, y, color, above) {
   context.font = overlayColors.font;
   const width = context.measureText(text).width + 12;
-  const height = 20;
+  const height = 26;
   const top = above ? Math.max(0, y - height - 3) : y + 3;
   context.fillStyle = color;
   context.beginPath();
@@ -374,12 +377,13 @@ function drawOverlay() {
     const color = face.student_id ? overlayColors.known : overlayColors.unknown;
     context.strokeStyle = color;
     context.strokeRect(box.x, box.y, box.width, box.height);
-    const label = face.student_id ? `${face.fullname} ${Math.round(face.confidence)}%` : "Không rõ";
+    const known = isTvDisplay() ? "Đã nhận diện" : `${face.fullname} ${Math.round(face.confidence)}%`;
+    const label = face.student_id ? known : "Không rõ";
     drawLabel(context, label, box.x, box.y, color, true);
   }
   for (const behavior of payload.behaviors || []) {
     const label = state.alertLabels.get(behavior.track_id);
-    if (!label) continue;
+    if (!label || namesHidden()) continue;
     const box = toScreen(behavior.box);
     const text = label.types.map((type) => BEHAVIOR_TEXT[type] || type).join(", ");
     drawLabel(context, text, box.x, box.y + box.height, overlayColors.alert, false);
@@ -483,17 +487,19 @@ function renderSession() {
   $("#reset-called-button").disabled = !active || !called;
   $("#student-list").innerHTML = state.students.map((student) => `
     <tr>
-      <td><div class="student-cell"><span class="mini-avatar">${initials(student.fullname)}</span><span>${escapeHtml(student.fullname)}${student.has_face ? "" : '<span class="source-tag" style="color: var(--red)">Chưa có ảnh khuôn mặt</span>'}</span></div></td>
+      <td><div class="student-cell"><span class="mini-avatar">${escapeHtml(initials(student.fullname))}</span><span>${escapeHtml(student.fullname)}${student.has_face ? "" : '<span class="source-tag missing-face">Chưa có ảnh khuôn mặt</span>'}</span></div></td>
       <td>${escapeHtml(student.student_code)}</td>
-      <td>${active ? attendanceBadge(student, true) : '<span class="badge absent">-</span>'}${student.note ? `<span class="source-tag">${escapeHtml(student.note)}</span>` : ""}</td>
+      <td>${active ? attendanceBadge(student, true) : '<span class="badge absent">-</span>'}${student.note ? `<span class="source-tag desk-only">${escapeHtml(student.note)}</span>` : ""}</td>
       <td>${student.checked_in_at ? `${formatTime(student.checked_in_at)}<span class="source-tag">${student.attendance_source === "MANUAL" ? "Giáo viên" : "Camera"}</span>` : "-"}</td>
-      <td>${student.is_called ? '<span class="badge called">Đã gọi</span>' : "-"}</td>
-      <td><div class="row-actions">
+      <td>${student.is_called
+        ? `<span class="badge called">Đã gọi</span><span class="source-tag">${formatTime(student.called_at)}</span>`
+        : student.called_at ? `<span class="source-tag">Vòng trước · ${formatTime(student.called_at)}</span>` : "-"}</td>
+      <td class="desk-only"><div class="row-actions">
         <button type="button" class="button ghost" data-reenroll="${student.id}" title="Cập nhật ảnh khuôn mặt">${student.has_face ? "Ảnh" : "+ Ảnh"}</button>
         <button type="button" class="button danger" data-delete="${student.id}" title="Xóa học sinh">Xóa</button>
       </div></td>
     </tr>
-  `).join("") || '<tr><td colspan="6">Chưa có học sinh đăng ký.</td></tr>';
+  `).join("") || '<tr><td colspan="6" class="empty-row">Chưa có học sinh. Bấm nút + ở mục Đăng ký học sinh để thêm.</td></tr>';
 }
 
 async function toggleAttendance(studentId, currentlyPresent) {
@@ -590,13 +596,12 @@ async function showSessionReport(sessionId) {
   try {
     const detail = await api(`/api/sessions/${sessionId}`);
     const absent = detail.students.filter((student) => !student.is_present);
-    $("#report-eyebrow").textContent = "BÁO CÁO PHIÊN HỌC";
     $("#report-title").textContent = detail.title || `Phiên #${detail.id}`;
     $("#report-body").innerHTML = `
-      <span style="color: var(--muted)">${formatDateTime(detail.created_at)}${detail.finished_at ? ` → ${formatTime(detail.finished_at)}` : " · đang diễn ra"}</span>
+      <span class="report-meta">${formatDateTime(detail.created_at)}${detail.finished_at ? ` → ${formatTime(detail.finished_at)}` : " · đang diễn ra"}</span>
       ${summaryGrid(detail.summary)}
       <div><strong>Học sinh vắng (${absent.length})</strong>
-        ${absent.length ? `<ul class="absent-list">${absent.map((student) => `<li>${escapeHtml(student.fullname)} (${escapeHtml(student.student_code)})${student.note ? ` – ${escapeHtml(student.note)}` : ""}</li>`).join("")}</ul>` : '<p style="margin: 4px 0 0">Không có.</p>'}
+        ${absent.length ? `<ul class="absent-list">${absent.map((student) => `<li>${escapeHtml(student.fullname)} (${escapeHtml(student.student_code)})${student.note ? `<span class="desk-only"> – ${escapeHtml(student.note)}</span>` : ""}</li>`).join("")}</ul>` : '<p class="report-none">Không có.</p>'}
       </div>
       <button type="button" class="button secondary full" data-export="${detail.id}">Tải bảng điểm danh (CSV/Excel)</button>
     `;
@@ -607,7 +612,6 @@ async function showSessionReport(sessionId) {
 async function showHistory() {
   try {
     const sessions = await api("/api/sessions?limit=30");
-    $("#report-eyebrow").textContent = "LỊCH SỬ";
     $("#report-title").textContent = "Các phiên học gần đây";
     $("#report-body").innerHTML = sessions.map((item) => `
       <div class="history-item">
@@ -658,9 +662,11 @@ async function startSession() {
 
 async function finishSession() {
   if (!state.session) return;
-  const absent = state.students.filter((student) => !student.is_present).length;
-  const message = absent
-    ? `Kết thúc phiên? Còn ${absent} học sinh chưa được điểm danh và sẽ được ghi nhận là vắng.`
+  const unrecorded = state.students.filter(
+    (student) => !student.is_present && student.attendance_source !== "MANUAL",
+  ).length;
+  const message = unrecorded
+    ? `Kết thúc phiên? Còn ${unrecorded} học sinh chưa được điểm danh và sẽ được ghi nhận là vắng.`
     : "Kết thúc phiên học?";
   if (!window.confirm(message)) return;
   try {
@@ -694,10 +700,12 @@ async function pickStudent() {
   const avatarRing = $(".avatar-ring");
   const nameEl = $("#picked-name");
 
-  if (initialsEl) initialsEl.textContent = "?";
+  if (initialsEl) {
+    initialsEl.textContent = "?";
+    initialsEl.style.display = "block"; // a previous pick with a photo hides it
+  }
   if (avatarRing) {
     avatarRing.style.borderColor = "var(--blue)";
-    avatarRing.style.boxShadow = "none";
   }
   $("#picked-avatar").style.display = "none";
 
@@ -757,7 +765,6 @@ async function pickStudent() {
       const color = colors[tick % colors.length];
       if (avatarRing) {
         avatarRing.style.borderColor = color;
-        avatarRing.style.boxShadow = `0 0 15px ${color}`;
       }
 
       playTick(800 + (tick % 4) * 100);
@@ -770,7 +777,6 @@ async function pickStudent() {
         showPickedStudent(student);
         if (avatarRing) {
           avatarRing.style.borderColor = "var(--green)";
-          avatarRing.style.boxShadow = "0 0 30px var(--green)";
         }
         playTada();
         speakWarning(`Mời bạn ${student.fullname} lên bảng trả bài`);
@@ -939,6 +945,69 @@ function speakWarning(text) {
   }
 }
 
+const HIDE_NAMES_STORAGE_KEY = "smart-classroom-hide-alert-names";
+
+// On the classroom TV, behavior alerts must never single anyone out.
+function isTvDisplay() {
+  return document.documentElement.dataset.display === "tv";
+}
+
+function namesHidden() {
+  if (isTvDisplay()) return true;
+  const checkbox = $("#hide-alert-names-checkbox-modal");
+  return Boolean(checkbox && checkbox.checked);
+}
+
+function alertName(alert) {
+  return namesHidden() ? "Một học sinh" : alert.fullname;
+}
+
+const DISPLAY_STORAGE_KEY = "smart-classroom-display";
+
+function applyDisplay(mode) {
+  document.documentElement.dataset.display = mode;
+  localStorage.setItem(DISPLAY_STORAGE_KEY, mode);
+  for (const button of document.querySelectorAll("[data-display-mode]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.displayMode === mode));
+  }
+  renderAlerts();
+  drawOverlay();
+}
+
+function announceCheckIn(student) {
+  if (isTvDisplay() && $("#tv-hide-checkin-checkbox-modal").checked) return;
+  toast(`Đã điểm danh: ${student.fullname || "học sinh"}`);
+}
+
+function initTvPrivacy() {
+  const options = [
+    ["#tv-hide-checkin-checkbox-modal", "smart-classroom-tv-hide-checkin", null],
+    ["#tv-hide-missing-face-checkbox-modal", "smart-classroom-tv-hide-missing-face", "tvHideMissingFace"],
+  ];
+  for (const [selector, storageKey, datasetKey] of options) {
+    const checkbox = $(selector);
+    const apply = () => {
+      if (datasetKey) document.documentElement.dataset[datasetKey] = String(checkbox.checked);
+    };
+    checkbox.checked = localStorage.getItem(storageKey) !== "false"; // on by default
+    apply();
+    checkbox.addEventListener("change", () => {
+      localStorage.setItem(storageKey, String(checkbox.checked));
+      apply();
+    });
+  }
+}
+
+function initHideNames() {
+  const checkbox = $("#hide-alert-names-checkbox-modal");
+  checkbox.checked = localStorage.getItem(HIDE_NAMES_STORAGE_KEY) === "true";
+  checkbox.addEventListener("change", (event) => {
+    localStorage.setItem(HIDE_NAMES_STORAGE_KEY, String(event.target.checked));
+    renderAlerts();
+    drawOverlay();
+  });
+}
+
 function initAudioToggles() {
   const audioCheckbox = $("#audio-alert-checkbox-modal");
   const ttsCheckbox = $("#tts-alert-checkbox-modal");
@@ -986,6 +1055,8 @@ function restartCameraTimer() {
 
 function initSettings() {
   initAudioToggles();
+  initHideNames();
+  initTvPrivacy();
   populateVoices();
   const fpsSelect = $("#video-fps-select-modal");
   if (fpsSelect) {
@@ -1012,7 +1083,7 @@ function addAlert(alert) {
   state.alerts.unshift(alert);
   state.alerts = state.alerts.slice(0, 30);
   renderAlerts();
-  toast(`${alert.label}: ${alert.fullname}`, true);
+  toast(`${alert.label}: ${alertName(alert)}`, true);
 
   const studentKey = alert.student_id || alert.fullname;
   const cooldownKey = `${alert.behavior_type}_${studentKey}`;
@@ -1021,7 +1092,7 @@ function addAlert(alert) {
   if (!alertCooldowns.has(cooldownKey) || now - alertCooldowns.get(cooldownKey) > 10000) {
     alertCooldowns.set(cooldownKey, now);
     playWarningSound();
-    speakWarning(`Cảnh báo ${alert.label}, ${alert.fullname}`);
+    speakWarning(namesHidden() ? `Cảnh báo ${alert.label}` : `Cảnh báo ${alert.label}, ${alert.fullname}`);
   }
 }
 
@@ -1032,10 +1103,10 @@ function renderAlerts() {
   $("#clear-alerts-button").disabled = state.alerts.length === 0;
   $("#alert-list").innerHTML = state.alerts.map((alert) => `
     <div class="alert-item">
-      <strong>${escapeHtml(alert.label || alert.behavior_type)} · ${escapeHtml(alert.fullname)}</strong>
+      <strong>${escapeHtml(alert.label || alert.behavior_type)} · ${escapeHtml(alertName(alert))}</strong>
       <span>${alert.timestamp ? new Date(alert.timestamp).toLocaleString("vi-VN") : "Vừa phát hiện"}</span>
     </div>
-  `).join("") || '<span class="badge absent">Chưa có cảnh báo</span>';
+  `).join("") || '<p class="empty-note">Chưa có cảnh báo. Hành vi được phát hiện sẽ hiện ở đây.</p>';
 }
 
 async function clearAlerts() {
@@ -1078,7 +1149,11 @@ $("#pick-button").addEventListener("click", pickStudent);
 $("#reset-called-button").addEventListener("click", resetCalled);
 $("#clear-alerts-button").addEventListener("click", clearAlerts);
 $("#close-picker-button").addEventListener("click", () => $("#picker-modal").classList.remove("visible"));
-$("#toggle-register-button").addEventListener("click", () => $("#register-form").classList.toggle("hidden"));
+$("#toggle-register-button").addEventListener("click", (event) => {
+  const hidden = $("#register-form").classList.toggle("hidden");
+  event.currentTarget.setAttribute("aria-expanded", String(!hidden));
+  if (!hidden) $('#register-form input[name="student_code"]').focus();
+});
 $("#register-form").addEventListener("submit", registerStudent);
 $("#student-list").addEventListener("click", onStudentListClick);
 $("#export-session-button").addEventListener("click", () => state.session && exportSession(state.session.id));
@@ -1104,6 +1179,12 @@ const setupOutsideClickClose = (modalSelector) => {
 setupOutsideClickClose("#settings-modal");
 setupOutsideClickClose("#picker-modal");
 setupOutsideClickClose("#report-modal");
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  for (const selector of ["#settings-modal", "#picker-modal", "#report-modal"]) {
+    $(selector).classList.remove("visible");
+  }
+});
 window.addEventListener("resize", () => drawOverlay());
 document.addEventListener("visibilitychange", () => {
   // Frames are not sent while the tab is hidden; drop the stale overlay.
@@ -1122,6 +1203,10 @@ api("/api/auth/status")
   })
   .catch(() => $("#login-modal").classList.add("visible"));
 
-applyTheme(document.documentElement.dataset.theme || "dark");
+applyTheme(document.documentElement.dataset.theme || "light");
+for (const button of document.querySelectorAll("[data-display-mode]")) {
+  button.addEventListener("click", () => applyDisplay(button.dataset.displayMode));
+}
 refreshVideoDevices();
 initSettings();
+applyDisplay(document.documentElement.dataset.display || "desk");

@@ -35,7 +35,8 @@ Hệ thống ứng dụng Trí tuệ Nhân tạo (AI) và Thị giác Máy tính
     - FastAPI tự động nạp trước (preload) các mô hình DeepFace và MediaPipe khi khởi chạy máy chủ (lifespan), giúp bật camera lên là có hình ảnh phân tích ngay lập tức.
 *   **Hộp thoại Cài đặt Tập trung (Settings Modal)**: Tích hợp cấu hình chọn nguồn camera (Hot-swapping), tần suất gửi khung hình (FPS), bật/tắt âm thanh/giọng nói cảnh báo, **tùy chọn bộ lọc giọng đọc TTS hệ thống** và chuyển đổi giao diện sáng/tối vào một cửa sổ popup duy nhất để làm gọn Dashboard.
 *   **Giao diện Dashboard hiện đại**:
-    *   Thiết kế cao cấp theo xu hướng **Glassmorphism** và **Dark Mode** tự động ghi nhớ tùy chọn trên trình duyệt.
+    *   **2 chế độ hiển thị**: **Máy tính GV** đầy đủ công cụ và **Chiếu TV** chữ lớn, ẩn công cụ quản trị, che tên học sinh trong cảnh báo. Xem [docs/display-modes.md](docs/display-modes.md).
+    *   Giao diện sáng/tối nền đặc, tương phản cao, tự động ghi nhớ tùy chọn trên trình duyệt. Quy ước thiết kế: [docs/ui-refresh-2026-11.md](docs/ui-refresh-2026-11.md).
     *   Có nút xóa audit trail kèm snapshot bằng chứng sau bước xác nhận.
     *   Hiển thị live stream video vẽ kèm bounding box, landmarks và các cảnh báo thời gian thực.
     *   Sidebar thống kê nhanh và quản lý danh sách học sinh.
@@ -52,7 +53,7 @@ Hệ thống ứng dụng Trí tuệ Nhân tạo (AI) và Thị giác Máy tính
     *   **Pillow** hỗ trợ vẽ Tiếng Việt Unicode trực tiếp trên hình ảnh camera.
 *   **Framework Backend**: **FastAPI** hỗ trợ WebSockets streaming và API xử lý bất đồng bộ (async).
 *   **Cơ sở Dữ liệu**: **SQLite** tích hợp cùng ORM **SQLAlchemy**.
-*   **Frontend**: HTML5, Vanilla CSS (Glassmorphism), Vanilla JS (WebSockets Client, Web Audio API, Web Speech API).
+*   **Frontend**: HTML5, Vanilla CSS, Vanilla JS (WebSockets Client, Web Audio API, Web Speech API).
 
 ---
 

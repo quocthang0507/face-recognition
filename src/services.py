@@ -378,7 +378,10 @@ class ClassroomService:
 
     @staticmethod
     def reset_called(db: Session, session_id: int) -> None:
-        """Reset the called state for all students in an active lesson."""
+        """Start a new picker round.
+
+        ``called_at`` is kept so reports still show who answered in the lesson.
+        """
 
         ClassroomService._active_by_id(db, session_id)
         states = db.scalars(
@@ -386,7 +389,6 @@ class ClassroomService:
         )
         for state in states:
             state.is_called = False
-            state.called_at = None
         db.commit()
 
     @staticmethod
@@ -419,7 +421,7 @@ class ClassroomService:
             present=len(present),
             late=sum(1 for state in present if is_late(state, classroom_session)),
             absent=len(states) - len(present),
-            called=sum(1 for state in states if state.is_called),
+            called=sum(1 for state in states if state.called_at is not None),
             manual=sum(
                 1 for state in states if state.attendance_source == ATTENDANCE_MANUAL
             ),

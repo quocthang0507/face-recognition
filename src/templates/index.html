@@ -6,56 +6,71 @@
     <title>Lớp học Thông minh</title>
     <link rel="icon" type="image/png" href="/static/favicon.png" />
     <script>
-      document.documentElement.dataset.theme = localStorage.getItem("smart-classroom-theme")
-        || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      // Light is the default: it holds up best on a TV or projector in a lit classroom.
+      document.documentElement.dataset.theme = localStorage.getItem("smart-classroom-theme") || "light";
+      document.documentElement.dataset.display = localStorage.getItem("smart-classroom-display") || "desk";
     </script>
-    <link rel="stylesheet" href="/static/css/style.css" />
+    <link rel="stylesheet" href="/static/css/style.css?v=1.5.0" />
   </head>
   <body>
-    <div class="ambient ambient-one"></div>
-    <div class="ambient ambient-two"></div>
+    <svg style="display: none" aria-hidden="true">
+      <defs>
+        <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+        <symbol id="i-camera-off" viewBox="0 0 24 24"><path d="m2 2 20 20"/><path d="M7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16"/><path d="M9.5 4h5L17 7h3a2 2 0 0 1 2 2v7.5"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/></symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h10"/><path d="M18 7h2"/><circle cx="16" cy="7" r="2"/><path d="M4 17h2"/><path d="M10 17h10"/><circle cx="8" cy="17" r="2"/></symbol>
+        <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
+        <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></symbol>
+        <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+        <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M2 18h3.5c1.5 0 2.8-.7 3.7-1.9l5.6-8.2C15.700 6.700 17 6 18.500 6H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h3.500c1.300 0 2.500.6 3.400 1.500"/><path d="M15.100 16.500c.9.9 2.100 1.500 3.400 1.500H22"/><path d="m18 14 4 4-4 4"/></symbol>
+        <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.700L3 8"/><path d="M3 3v5h5"/></symbol>
+        <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+        <symbol id="i-history" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+        <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 20h20"/></symbol>
+        <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></symbol>
+      </defs>
+    </svg>
+
     <main class="shell">
-      <header class="topbar glass">
-        <div>
-          <p class="eyebrow">LỚP HỌC THÔNG MINH</p>
-          <h1>Giám sát Lớp học</h1>
-        </div>
+      <header class="topbar surface">
+        <h1>Giám sát Lớp học</h1>
         <div class="topbar-actions">
-          <span id="socket-status" class="status-pill offline">Camera ngoại tuyến</span>
-          <button id="settings-button" class="button ghost">Cài đặt</button>
-          <button id="logout-button" class="button ghost">Đăng xuất</button>
+          <span id="socket-status" class="status-pill offline" role="status">Camera ngoại tuyến</span>
+          <div class="display-switch" role="group" aria-label="Chế độ hiển thị">
+            <button type="button" id="display-desk" data-display-mode="desk" aria-pressed="true"><svg class="icon"><use href="#i-laptop"/></svg>Máy tính GV</button>
+            <button type="button" id="display-tv" data-display-mode="tv" aria-pressed="false"><svg class="icon"><use href="#i-tv"/></svg>Chiếu TV</button>
+          </div>
+          <button id="settings-button" class="button ghost"><svg class="icon"><use href="#i-settings"/></svg>Cài đặt</button>
+          <button id="logout-button" class="button ghost"><svg class="icon"><use href="#i-logout"/></svg>Đăng xuất</button>
         </div>
       </header>
 
-      <section class="stats">
-        <article class="stat glass">
+      <section class="stats surface" aria-label="Tổng quan phiên học">
+        <div class="stat stat-session">
           <span>Phiên học</span>
           <strong id="session-stat">Chưa bắt đầu</strong>
-        </article>
-        <article class="stat glass">
+        </div>
+        <div class="stat">
           <span>Có mặt</span>
           <strong id="present-stat">0 / 0</strong>
-        </article>
-        <article class="stat glass">
+        </div>
+        <div class="stat">
           <span>Đã gọi</span>
           <strong id="called-stat">0</strong>
-        </article>
-        <article class="stat glass alert-stat">
+        </div>
+        <div class="stat alert-stat">
           <span>Cảnh báo</span>
           <strong id="alert-stat">0</strong>
-        </article>
+        </div>
       </section>
 
       <section class="dashboard-grid">
-        <article class="camera-card glass">
+        <article class="camera-card surface">
           <div class="section-heading">
-            <div>
-              <p class="eyebrow">PHÂN TÍCH TRỰC TIẾP</p>
-              <h2>Camera lớp học</h2>
-            </div>
+            <h2>Camera lớp học</h2>
             <div class="camera-actions">
-              <button id="start-camera-button" class="button secondary">Bật camera</button>
-              <button id="stop-camera-button" class="button ghost" disabled>Tắt camera</button>
+              <button id="start-camera-button" class="button secondary"><svg class="icon"><use href="#i-camera"/></svg><span class="label">Bật camera</span></button>
+              <button id="stop-camera-button" class="button ghost" disabled><svg class="icon"><use href="#i-camera-off"/></svg>Tắt camera</button>
             </div>
           </div>
           <div class="video-stage">
@@ -63,17 +78,32 @@
             <img id="processed-frame" alt="Khung hình camera đã xử lý" />
             <canvas id="overlay-canvas" aria-hidden="true"></canvas>
             <div id="camera-placeholder" class="camera-placeholder">
-              <div class="scan-icon"></div>
+              <svg class="placeholder-icon" aria-hidden="true"><use href="#i-camera"/></svg>
               <span>Bật camera để bắt đầu phân tích</span>
             </div>
           </div>
           <canvas id="capture-canvas" hidden></canvas>
-          <div id="engine-message" class="engine-message"></div>
+          <div id="engine-message" class="engine-message" role="status"></div>
         </article>
 
         <aside class="side-column">
-          <article class="behavior-card glass">
-            <p class="eyebrow">KIỂM TRA HÀNH VI</p>
+          <article class="picker-card surface">
+            <h2>Điều khiển phiên</h2>
+            <input id="session-title-input" class="session-title-input" aria-label="Tên buổi học" placeholder="Tên buổi học (VD: Toán 7A - Tiết 2)" maxlength="120" />
+            <p id="session-meta" class="session-meta"></p>
+            <div class="session-actions">
+              <button id="start-session-button" class="button secondary"><svg class="icon"><use href="#i-play"/></svg>Bắt đầu</button>
+              <button id="finish-session-button" class="button ghost" disabled><svg class="icon"><use href="#i-stop"/></svg>Kết thúc</button>
+            </div>
+            <button id="pick-button" class="button primary full pick-button" disabled><svg class="icon"><use href="#i-shuffle"/></svg>Gọi ngẫu nhiên</button>
+            <button id="reset-called-button" class="button ghost full desk-only" disabled><svg class="icon"><use href="#i-reset"/></svg>Reset lượt gọi</button>
+            <div class="session-actions session-actions-last desk-only">
+              <button id="export-session-button" class="button ghost" disabled><svg class="icon"><use href="#i-download"/></svg>Xuất CSV</button>
+              <button id="history-button" class="button ghost"><svg class="icon"><use href="#i-history"/></svg>Lịch sử</button>
+            </div>
+          </article>
+
+          <article class="behavior-card surface desk-only">
             <h2>Phân tích hành vi</h2>
             <p>Bật hoặc tắt từng cảnh báo độc lập với phiên điểm danh.</p>
             <div class="behavior-options">
@@ -82,38 +112,16 @@
               <button type="button" class="behavior-toggle active" data-behavior="CHEATING" aria-pressed="true">Quay cóp</button>
               <button type="button" class="behavior-toggle active" data-behavior="TALKING" aria-pressed="true">Nói chuyện</button>
             </div>
-
           </article>
 
-          <article class="picker-card glass">
-            <p class="eyebrow">PHIÊN HỌC &amp; GỌI TRẢ BÀI</p>
-            <h2>Điều khiển phiên</h2>
-            <p>Bắt đầu phiên để camera tự điểm danh, ghi nhật ký và gọi học sinh trả bài.</p>
-            <input id="session-title-input" class="session-title-input" placeholder="Tên buổi học (VD: Toán 7A - Tiết 2)" maxlength="120" />
-            <p id="session-meta" class="session-meta"></p>
-            <div class="session-actions">
-              <button id="start-session-button" class="button secondary">Bắt đầu phiên</button>
-              <button id="finish-session-button" class="button ghost" disabled>Kết thúc</button>
-            </div>
-            <button id="pick-button" class="button primary full" disabled>Gọi ngẫu nhiên</button>
-            <button id="reset-called-button" class="button ghost full" disabled>Reset lượt gọi</button>
-            <div class="session-actions">
-              <button id="export-session-button" class="button ghost" disabled>Xuất CSV</button>
-              <button id="history-button" class="button ghost">Lịch sử phiên</button>
-            </div>
-          </article>
-
-          <article class="register-card glass">
+          <article class="register-card surface desk-only">
             <div class="section-heading compact">
-              <div>
-                <p class="eyebrow">ĐĂNG KÝ HỌC SINH</p>
-                <h2>Đăng ký học sinh</h2>
-              </div>
-              <button id="toggle-register-button" class="icon-button">+</button>
+              <h2>Đăng ký học sinh</h2>
+              <button id="toggle-register-button" class="icon-button" aria-label="Mở biểu mẫu đăng ký học sinh" aria-expanded="false" aria-controls="register-form"><svg class="icon"><use href="#i-plus"/></svg></button>
             </div>
             <form id="register-form" class="register-form hidden">
-              <input name="student_code" placeholder="Mã học sinh" maxlength="20" required />
-              <input name="fullname" placeholder="Họ và tên" maxlength="100" required />
+              <input name="student_code" aria-label="Mã học sinh" placeholder="Mã học sinh" maxlength="20" required />
+              <input name="fullname" aria-label="Họ và tên" placeholder="Họ và tên" maxlength="100" required />
               <label class="file-field">
                 <span>Ảnh tải lên (không bắt buộc)</span>
                 <input name="image" type="file" accept="image/jpeg,image/png,image/webp" />
@@ -125,90 +133,76 @@
       </section>
 
       <section class="lower-grid">
-        <article class="glass table-card">
+        <article class="surface table-card">
           <div class="section-heading compact">
-            <div>
-              <p class="eyebrow">ĐIỂM DANH</p>
-              <h2>Danh sách lớp</h2>
-            </div>
+            <h2>Danh sách lớp</h2>
             <span id="attendance-hint" class="table-hint">Bấm vào trạng thái để điểm danh thủ công</span>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Học sinh</th><th>Mã số</th><th>Điểm danh</th><th>Giờ vào</th><th>Trả bài</th><th>Thao tác</th></tr>
+                <tr><th>Học sinh</th><th>Mã số</th><th>Điểm danh</th><th>Giờ vào</th><th>Trả bài</th><th class="desk-only">Thao tác</th></tr>
               </thead>
               <tbody id="student-list"></tbody>
             </table>
           </div>
         </article>
 
-        <article class="glass alert-card">
+        <article class="surface alert-card desk-only">
           <div class="section-heading compact">
-            <div>
-              <p class="eyebrow">NHẬT KÝ HÀNH VI</p>
-              <h2>Cảnh báo mới nhất</h2>
-            </div>
+            <h2>Cảnh báo mới nhất</h2>
             <button id="clear-alerts-button" class="button danger compact-button" disabled>Xóa lịch sử</button>
           </div>
           <div id="alert-list" class="alert-list"></div>
         </article>
       </section>
-
     </main>
 
-    <footer class="glass" style="position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); width: min(1500px, calc(100% - 32px)); padding: 16px 20px; text-align: center; color: var(--muted); font-size: 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; z-index: 5;">
-      <div>
-        <span>© 2026 Smart Classroom. Hệ thống quản lý và giám sát lớp học thông minh.</span>
-      </div>
-      <div style="display: flex; gap: 16px;">
-        <span style="color: var(--green); display: flex; align-items: center; gap: 6px;">
-          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block;"></span>
-          Hệ thống đang hoạt động ổn định
-        </span>
+    <footer class="app-footer">
+      <span>© 2026 Smart Classroom. Hệ thống quản lý và giám sát lớp học thông minh.</span>
+      <span class="footer-meta">
+        <span class="footer-status">Hệ thống đang hoạt động ổn định</span>
         <span>Phiên bản 1.4.0</span>
-      </div>
+      </span>
     </footer>
 
     <div id="login-modal" class="modal visible">
-      <form id="login-form" class="modal-panel glass">
-        <p class="eyebrow">TRUY CẬP GIÁO VIÊN</p>
-        <h2>Đăng nhập Dashboard</h2>
+      <form id="login-form" class="modal-panel surface" role="dialog" aria-modal="true" aria-labelledby="login-title">
+        <h2 id="login-title">Đăng nhập Dashboard</h2>
         <p>Nhập mật khẩu giáo viên để mở API và luồng camera.</p>
-        <input name="password" type="password" placeholder="Mật khẩu giáo viên" required />
+        <input name="password" type="password" aria-label="Mật khẩu giáo viên" placeholder="Mật khẩu giáo viên" required autofocus />
         <button class="button primary full" type="submit">Đăng nhập</button>
-        <span id="login-error" class="form-error"></span>
+        <span id="login-error" class="form-error" role="alert"></span>
       </form>
     </div>
 
     <div id="picker-modal" class="modal">
-      <div class="modal-panel picker-result glass">
-        <p class="eyebrow">HỌC SINH ĐƯỢC CHỌN</p>
+      <div class="modal-panel picker-result surface" role="dialog" aria-modal="true" aria-labelledby="picked-name">
+        <p class="picker-lead">Học sinh được chọn</p>
         <div class="avatar-ring">
           <img id="picked-avatar" alt="" />
           <span id="picked-initials">?</span>
         </div>
-        <h2 id="picked-name">Đang chọn...</h2>
+        <h2 id="picked-name" aria-live="polite">Đang chọn...</h2>
         <p id="picked-code"></p>
         <button id="close-picker-button" class="button primary full">Đóng</button>
       </div>
     </div>
 
     <div id="settings-modal" class="modal">
-      <div class="modal-panel settings-panel glass" style="width: min(450px, 100%);">
-        <p class="eyebrow">CẤU HÌNH HỆ THỐNG</p>
-        <h2>Cài đặt</h2>
+      <div class="modal-panel settings-panel surface" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <h2 id="settings-title">Cài đặt</h2>
         <p>Điều chỉnh nguồn camera, tốc độ truyền và cảnh báo âm thanh.</p>
-        
-        <div class="settings-group" style="display: grid; gap: 15px; text-align: left; margin: 20px 0;">
-          <div class="setting-item" style="display: grid; gap: 6px;">
-            <label style="font-size: 13px; color: var(--muted); font-weight: 700;">Nguồn Camera:</label>
-            <select id="video-source-select-modal" class="select-field" style="width: 100%;"></select>
+
+        <div class="settings-group">
+          <div class="setting-item">
+            <label for="video-source-select-modal">Nguồn Camera:</label>
+            <select id="video-source-select-modal" class="select-field"></select>
           </div>
 
-          <div class="setting-item" style="display: grid; gap: 6px;">
-            <label style="font-size: 13px; color: var(--muted); font-weight: 700;">Tần suất gửi khung hình (FPS):</label>
-            <select id="video-fps-select-modal" class="select-field" style="width: 100%;">
+          <div class="setting-item">
+            <label for="video-fps-select-modal">Tần suất gửi khung hình (FPS):</label>
+            <select id="video-fps-select-modal" class="select-field">
               <option value="67">Siêu mượt (15 FPS)</option>
               <option value="100">Mượt (10 FPS)</option>
               <option value="200">Tiêu chuẩn (5 FPS)</option>
@@ -216,42 +210,58 @@
             </select>
           </div>
 
-          <div class="setting-item" style="display: grid; gap: 6px;">
-            <label style="font-size: 13px; color: var(--muted); font-weight: 700;">Giao diện hiển thị:</label>
-            <select id="theme-select-modal" class="select-field" style="width: 100%;">
+          <div class="setting-item">
+            <label for="theme-select-modal">Giao diện hiển thị:</label>
+            <select id="theme-select-modal" class="select-field">
               <option value="dark">Giao diện tối (Dark Mode)</option>
               <option value="light">Giao diện sáng (Light Mode)</option>
             </select>
           </div>
 
-          <div class="setting-item" style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px; padding-top: 15px; border-top: 1px solid var(--line);">
-            <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; user-select: none;">
-              <input type="checkbox" id="audio-alert-checkbox-modal" checked style="width: 16px; height: 16px; padding: 0; margin: 0; cursor: pointer;" />
+          <div class="setting-checks">
+            <div class="setting-subgroup">
+              <span class="setting-subhead">Khi Chiếu TV</span>
+              <label class="checkbox-label">
+                <input type="checkbox" id="tv-hide-checkin-checkbox-modal" checked />
+                <span>Ẩn thông báo "Đã điểm danh"</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="tv-hide-missing-face-checkbox-modal" checked />
+                <span>Ẩn dòng "Chưa có ảnh khuôn mặt"</span>
+              </label>
+            </div>
+
+            <label class="checkbox-label desk-only">
+              <input type="checkbox" id="hide-alert-names-checkbox-modal" />
+              <span>Ẩn tên học sinh trong cảnh báo</span>
+            </label>
+
+            <label class="checkbox-label">
+              <input type="checkbox" id="audio-alert-checkbox-modal" checked />
               <span>Phát âm thanh cảnh báo (Bíp)</span>
             </label>
-            
+
             <fieldset class="settings-groupbox">
               <legend>
-                <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; user-select: none;">
-                  <input type="checkbox" id="tts-alert-checkbox-modal" checked style="width: 16px; height: 16px; padding: 0; margin: 0; cursor: pointer;" />
+                <label class="checkbox-label">
+                  <input type="checkbox" id="tts-alert-checkbox-modal" checked />
                   <span>Đọc tên học sinh vi phạm (TTS)</span>
                 </label>
               </legend>
-              <div id="tts-voice-container" style="display: grid; gap: 6px; text-align: left;">
-                <label style="font-size: 11px; color: var(--muted); font-weight: 700;">Giọng đọc:</label>
-                <select id="tts-voice-select-modal" class="select-field" style="width: 100%; font-size: 12px; padding: 6px 10px;"></select>
+              <div id="tts-voice-container" class="setting-item">
+                <label for="tts-voice-select-modal">Giọng đọc:</label>
+                <select id="tts-voice-select-modal" class="select-field"></select>
               </div>
             </fieldset>
           </div>
         </div>
-        
-        <button id="close-settings-button" class="button primary full">Lưu & Đóng</button>
+
+        <button id="close-settings-button" class="button primary full">Lưu &amp; Đóng</button>
       </div>
     </div>
 
     <div id="report-modal" class="modal">
-      <div class="modal-panel report-panel glass">
-        <p id="report-eyebrow" class="eyebrow">BÁO CÁO PHIÊN HỌC</p>
+      <div class="modal-panel report-panel surface" role="dialog" aria-modal="true" aria-labelledby="report-title">
         <h2 id="report-title">Tổng kết</h2>
         <div id="report-body" class="report-body"></div>
         <button id="close-report-button" class="button primary full">Đóng</button>
@@ -260,7 +270,7 @@
 
     <input id="reenroll-input" type="file" accept="image/jpeg,image/png,image/webp" hidden />
 
-    <div id="toast-container" class="toast-container"></div>
-    <script src="/static/js/app.js"></script>
+    <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
+    <script src="/static/js/app.js?v=1.5.0"></script>
   </body>
 </html>

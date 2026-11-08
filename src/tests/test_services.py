@@ -218,3 +218,17 @@ def test_shared_snapshot_is_kept_until_last_log_is_deleted(db: Session) -> None:
     assert storage.deleted == []
     BehaviorLogService.clear_all(db, storage)
     assert storage.deleted == ["s.jpg"]
+
+
+def test_reset_called_keeps_call_history_for_reports(db: Session) -> None:
+    student = register(db, "S01", "An")
+    classroom_session = ClassroomService.start_session(db)
+    ClassroomService.set_attendance(db, classroom_session.id, student.id, present=True)
+    ClassroomService.pick_random(db, classroom_session.id)
+
+    ClassroomService.reset_called(db, classroom_session.id)
+
+    state = ClassroomService.attendance(db, classroom_session.id)[0]
+    assert state.is_called is False
+    assert state.called_at is not None
+    assert ClassroomService.summary(db, classroom_session).called == 1
