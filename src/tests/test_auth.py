@@ -13,7 +13,7 @@ from src.auth import (
 def test_token_can_be_verified_before_expiry() -> None:
     token = issue_user_token(1, now=100)
 
-    assert verify_user_token(token, now=101) == 1
+    assert verify_user_token(token, now=101).user_id == 1
 
 
 def test_token_rejects_expired_timestamp() -> None:

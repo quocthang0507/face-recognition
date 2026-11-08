@@ -58,6 +58,7 @@
 }
 
 * { box-sizing: border-box; }
+.icon-sprite { display: none; }
 ::selection { color: var(--on-accent); background: var(--blue); }
 html { scrollbar-color: var(--line) transparent; }
 body {

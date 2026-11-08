@@ -192,12 +192,20 @@ class UserService:
         if password is not None:
             UserService._validate_password(password)
             user.password_hash = hash_password(password)
+            user.token_version += 1
         if role is not None:
             user.role = role
         if is_active is not None:
             user.is_active = is_active
         db.commit()
         return user
+
+    @staticmethod
+    def revoke_tokens(db: Session, user: User) -> None:
+        """End every session of this account."""
+
+        user.token_version += 1
+        db.commit()
 
     @staticmethod
     def ensure_admin(db: Session, password: str) -> None:

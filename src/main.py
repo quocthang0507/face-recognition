@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from .auth import (
     AuthenticationError,
     LoginThrottle,
+    TokenClaims,
     issue_user_token,
     verify_user_token,
 )
@@ -85,6 +86,21 @@ _shared_engine: FaceRecognitionEngine | None = None
 _shared_engine_lock = threading.Lock()
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+CONTENT_SECURITY_POLICY = "; ".join(
+    [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "img-src 'self' data: blob:",
+        "media-src 'self' blob:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ]
+)
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 CONSENT_REQUIRED = "Cần có đồng ý của phụ huynh trước khi lưu ảnh khuôn mặt"
 
 
@@ -245,7 +261,13 @@ async def _retention_cleanup_loop() -> None:
         await asyncio.to_thread(_cleanup_expired_logs)
 
 
-app = FastAPI(title="Smart Classroom", lifespan=lifespan)
+app = FastAPI(
+    title="Smart Classroom",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.allowed_origins),
@@ -256,9 +278,28 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
-def _active_user(db: Session, user_id: int) -> User | None:
-    user = db.get(User, user_id)
-    return user if user is not None and user.is_active else None
+@app.middleware("http")
+async def security_headers(request: Request, call_next) -> Response:
+    """Attach browser protections to every HTTP response."""
+
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(self), microphone=()"
+    if settings.secure_transport_only:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _active_user(db: Session, claims: TokenClaims) -> User | None:
+    user = db.get(User, claims.user_id)
+    if user is None or not user.is_active or user.token_version != claims.version:
+        return None
+    return user
 
 
 def require_teacher(
@@ -396,7 +437,7 @@ def login(
     login_throttle.record_success(client)
     response.set_cookie(
         key=settings.cookie_name,
-        value=issue_user_token(user.id),
+        value=issue_user_token(user.id, user.token_version),
         httponly=True,
         secure=settings.secure_cookie,
         samesite="strict",
@@ -406,9 +447,19 @@ def login(
 
 
 @app.post("/api/auth/logout")
-def logout(response: Response) -> dict[str, str]:
-    """Delete the teacher session cookie."""
+def logout(
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    token: Annotated[str | None, Cookie(alias=settings.cookie_name)] = None,
+) -> dict[str, str]:
+    """End the account's sessions and delete the cookie."""
 
+    try:
+        user = _active_user(db, verify_user_token(token))
+    except AuthenticationError:
+        user = None
+    if user is not None:
+        UserService.revoke_tokens(db, user)
     response.delete_cookie(settings.cookie_name)
     return {"status": "logged_out"}
 
@@ -890,15 +941,15 @@ def export_session_csv(
         writer.writerow(
             [
                 index,
-                state.student.student_code,
-                state.student.fullname,
+                _csv_safe(state.student.student_code),
+                _csv_safe(state.student.fullname),
                 _attendance_label(state, classroom_session),
                 _local_time(state.checked_in_at),
                 {"AUTO": "Camera", "MANUAL": "Giáo viên"}.get(
                     state.attendance_source or "", ""
                 ),
                 _local_time(state.called_at) if state.called_at else "",
-                state.note or "",
+                _csv_safe(state.note or ""),
             ]
         )
     filename = f"diem-danh-phien-{session_id}.csv"
@@ -1067,13 +1118,13 @@ def _verify_websocket(websocket: WebSocket) -> int:
     if settings.secure_transport_only and websocket.url.scheme != "wss":
         if forwarded_proto not in {"https", "wss"}:
             raise AuthenticationError("Yêu cầu kết nối bảo mật WSS")
-    user_id = verify_user_token(websocket.cookies.get(settings.cookie_name))
+    claims = verify_user_token(websocket.cookies.get(settings.cookie_name))
     try:
         class_id = int(websocket.query_params.get("class_id", ""))
     except ValueError as exc:
         raise AuthenticationError("Thiếu lớp cho luồng camera") from exc
     with SessionLocal() as db:
-        user = _active_user(db, user_id)
+        user = _active_user(db, claims)
         if user is None:
             raise AuthenticationError("Tài khoản không còn hiệu lực")
         if db.get(SchoolClass, class_id) is None or not _can_access_class(
@@ -1115,6 +1166,12 @@ def _websocket_behavior_config(message: dict[str, object]) -> list[str] | None:
     ):
         raise ValueError("enabled_behaviors phải là một danh sách chuỗi")
     return enabled_behaviors
+
+
+def _csv_safe(value: str) -> str:
+    """Stop spreadsheets from running user text as a formula."""
+
+    return f"'{value}" if value.startswith(CSV_FORMULA_PREFIXES) else value
 
 
 def _class_payload(school_class: SchoolClass) -> dict[str, object]:

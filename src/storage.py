@@ -11,7 +11,7 @@ from .config import settings
 
 
 class PrivateStorage:
-    """Store avatars encrypted and snapshots with restricted permissions."""
+    """Store avatars and behavior evidence encrypted at rest."""
 
     def __init__(self) -> None:
         settings.ensure_directories()
@@ -51,18 +51,19 @@ class PrivateStorage:
             pass
 
     def save_snapshot(self, content: bytes) -> str:
-        """Store a JPEG evidence snapshot with private filesystem permissions."""
+        """Encrypt and store a JPEG evidence snapshot."""
 
-        name = f"{uuid4().hex}.jpg"
+        name = f"{uuid4().hex}.enc"
         path = settings.snapshot_dir / name
-        path.write_bytes(content)
+        path.write_bytes(self._cipher.encrypt(content))
         path.chmod(0o600)
         return name
 
     def read_snapshot(self, name: str) -> bytes:
-        """Read a stored behavior evidence snapshot."""
+        """Read a snapshot; plain .jpg files predate encryption and age out."""
 
-        return self._safe_path(settings.snapshot_dir, name).read_bytes()
+        content = self._safe_path(settings.snapshot_dir, name).read_bytes()
+        return content if name.endswith(".jpg") else self._cipher.decrypt(content)
 
     def delete_snapshot(self, name: str) -> None:
         """Delete a snapshot if it still exists."""

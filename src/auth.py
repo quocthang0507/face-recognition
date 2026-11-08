@@ -8,6 +8,7 @@ import hmac
 import json
 import secrets
 import time
+from dataclasses import dataclass
 
 from .config import settings
 
@@ -20,6 +21,14 @@ class AuthenticationError(ValueError):
     """Raised when an authentication token is invalid or expired."""
 
 
+@dataclass(frozen=True)
+class TokenClaims:
+    """The account a token belongs to and the session generation it was issued in."""
+
+    user_id: int
+    version: int
+
+
 def _encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -30,27 +39,31 @@ def _decode(raw: str) -> bytes:
 
 def _sign(payload: str) -> bytes:
     return hmac.new(
-        settings.token_secret.encode("utf-8"),
+        settings.signing_key.encode("utf-8"),
         payload.encode("ascii"),
         hashlib.sha256,
     ).digest()
 
 
-def issue_user_token(user_id: int, now: int | None = None) -> str:
+def issue_user_token(user_id: int, version: int = 0, now: int | None = None) -> str:
     """Issue an expiring access token for one account, signed with HMAC SHA-256."""
 
     issued_at = int(time.time() if now is None else now)
     payload = _encode(
         json.dumps(
-            {"uid": user_id, "exp": issued_at + settings.token_ttl_seconds},
+            {
+                "uid": user_id,
+                "ver": version,
+                "exp": issued_at + settings.token_ttl_seconds,
+            },
             separators=(",", ":"),
         ).encode("utf-8")
     )
     return f"{payload}.{_encode(_sign(payload))}"
 
 
-def verify_user_token(token: str | None, now: int | None = None) -> int:
-    """Return the account ID in a valid token and raise on invalid input."""
+def verify_user_token(token: str | None, now: int | None = None) -> TokenClaims:
+    """Return the claims of a valid token and raise on invalid input."""
 
     if not token:
         raise AuthenticationError("Thiếu token đăng nhập")
@@ -62,7 +75,7 @@ def verify_user_token(token: str | None, now: int | None = None) -> int:
         current_time = int(time.time() if now is None else now)
         if int(content["exp"]) < current_time:
             raise AuthenticationError("Token đăng nhập đã hết hạn")
-        return int(content["uid"])
+        return TokenClaims(int(content["uid"]), int(content["ver"]))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         if isinstance(exc, AuthenticationError):
             raise

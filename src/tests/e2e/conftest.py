@@ -145,6 +145,14 @@ def anonymous_page(context, prompt_answer: dict[str, str]) -> Iterator:
     page = context.new_page()
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.on(
+        "console",
+        lambda message: (
+            errors.append(message.text)
+            if "Content Security Policy" in message.text
+            else None
+        ),
+    )
+    page.on(
         "dialog",
         lambda dialog: (
             dialog.accept(prompt_answer["text"])

@@ -175,7 +175,7 @@ export FACE_APP_SECURE_TRANSPORT_ONLY=true
 export FACE_APP_ALLOWED_ORIGINS='https://classroom.example.com'
 ```
 
-Avatar được mã hóa lưu trữ trên đĩa. Snapshot cảnh báo chỉ được truy cập qua API đã xác thực và tự động được xóa cùng log cũ sau 30 ngày khi ứng dụng khởi động, sau đó tiếp tục được dọn định kỳ mỗi 24 giờ.
+Avatar và snapshot cảnh báo được mã hóa khi lưu trên đĩa. Snapshot chỉ được truy cập qua API đã xác thực và tự động được xóa cùng log cũ sau 30 ngày khi ứng dụng khởi động, sau đó tiếp tục được dọn định kỳ mỗi 24 giờ.
 
 ### 6. Nghiệm thu webcam
 Quy trình nghiệm thu với người thật và công cụ preview chỉ số hành vi được mô tả trong [docs/guides/manual-verification.md](docs/guides/manual-verification.md):

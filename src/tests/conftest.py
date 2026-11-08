@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
@@ -10,7 +11,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from src.database import Base, get_db
+# Set before importing the app so tests never create a key in src/data.
+os.environ.setdefault("FACE_APP_TOKEN_SECRET", "unit-test-token-secret")
+
+from src.database import Base, get_db  # noqa: E402
 
 
 @pytest.fixture

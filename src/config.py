@@ -3,10 +3,27 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
+# Appears in the public repository and .env.example, so it can never sign tokens.
+PUBLISHED_TOKEN_SECRET = "development-only-change-this-secret"
+
+
+@lru_cache(maxsize=8)
+def _persistent_secret(path: Path) -> str:
+    """Return this installation's generated signing key, creating it once."""
+
+    if path.exists():
+        return path.read_text(encoding="ascii").strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secret = secrets.token_urlsafe(48)
+    path.write_text(secret, encoding="ascii")
+    path.chmod(0o600)
+    return secret
 
 
 def _as_bool(name: str, default: bool = False) -> bool:
@@ -53,9 +70,7 @@ class Settings:
         default_factory=lambda: os.getenv("FACE_APP_TEACHER_PASSWORD", "change-me")
     )
     token_secret: str = field(
-        default_factory=lambda: os.getenv(
-            "FACE_APP_TOKEN_SECRET", "development-only-change-this-secret"
-        )
+        default_factory=lambda: os.getenv("FACE_APP_TOKEN_SECRET", "")
     )
     cookie_name: str = "classroom_teacher"
     token_ttl_seconds: int = 8 * 60 * 60
@@ -88,9 +103,7 @@ class Settings:
     behavior_fps: float = field(
         default_factory=lambda: _as_float("FACE_APP_BEHAVIOR_FPS", 8.0)
     )
-    hand_fps: float = field(
-        default_factory=lambda: _as_float("FACE_APP_HAND_FPS", 3.0)
-    )
+    hand_fps: float = field(default_factory=lambda: _as_float("FACE_APP_HAND_FPS", 3.0))
     max_faces: int = field(default_factory=lambda: _as_int("FACE_APP_MAX_FACES", 8))
     embedding_detector: str = field(
         default_factory=lambda: os.getenv("FACE_APP_EMBED_DETECTOR", "skip")
@@ -120,8 +133,16 @@ class Settings:
 
         return (
             self.teacher_password == "change-me"
-            or self.token_secret == "development-only-change-this-secret"
+            or self.token_secret == PUBLISHED_TOKEN_SECRET
         )
+
+    @property
+    def signing_key(self) -> str:
+        """Return the configured token key, or a generated per-installation one."""
+
+        if self.token_secret and self.token_secret != PUBLISHED_TOKEN_SECRET:
+            return self.token_secret
+        return _persistent_secret(self.data_dir / ".token.key")
 
     def check_safe_to_start(self) -> None:
         """Refuse a production start with the credentials published in the repo."""

@@ -105,6 +105,8 @@ Thư mục này chứa dữ liệu sinh trắc của học sinh, nên chỉ chuy
 - Khi cập nhật, CSDL tự nâng cấp và tạo bản sao `classroom.db.bak-<phiên bản>`. Bản sao
   này tự xóa sau 30 ngày.
 - Hãy sao lưu định kỳ thư mục dữ liệu ra nơi khác, vì ứng dụng không tự làm việc này.
+- Avatar và ảnh bằng chứng được mã hóa, nhưng vector khuôn mặt trong CSDL thì không. Hãy
+  dùng ổ đĩa mã hóa trên máy chủ, và giữ `.avatar.key` tách khỏi nơi lưu bản sao nếu có thể.
 - Chỉ chạy **một** tiến trình server (không dùng `--workers` lớn hơn 1), vì CSDL SQLite,
   bộ nhớ đệm và giới hạn đăng nhập nằm trong một tiến trình.
 

@@ -55,7 +55,7 @@ def test_malformed_stored_hash_never_verifies() -> None:
 def test_token_identifies_the_user() -> None:
     token = auth.issue_user_token(42, now=100)
 
-    assert auth.verify_user_token(token, now=101) == 42
+    assert auth.verify_user_token(token, now=101).user_id == 42
 
 
 def test_username_is_normalized_and_unique(db: Session) -> None:
