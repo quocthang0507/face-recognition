@@ -152,6 +152,64 @@ def best_embedding_match(
     return best_student, best_confidence
 
 
+def assign_unique_identities(
+    embeddings: Sequence[Sequence[float] | None],
+    known_embeddings: Sequence[tuple[Student, Sequence[float]]],
+    minimum_confidence: float,
+) -> list[tuple[Student | None, float]]:
+    """Match faces to students so one student is never assigned to two faces.
+
+    Pairs are assigned greedily from the highest confidence downwards, which
+    prevents two look-alike faces in the same frame from both checking in the
+    same student.
+    """
+
+    pairs: list[tuple[float, int, int]] = []
+    best_scores = [0.0] * len(embeddings)
+    for face_index, embedding in enumerate(embeddings):
+        if not embedding:
+            continue
+        for student_index, (_, known) in enumerate(known_embeddings):
+            try:
+                confidence = max(0.0, cosine_similarity(embedding, known) * 100)
+            except ValueError:
+                continue
+            best_scores[face_index] = max(best_scores[face_index], confidence)
+            if confidence >= minimum_confidence:
+                pairs.append((confidence, face_index, student_index))
+    results: list[tuple[Student | None, float]] = [
+        (None, score) for score in best_scores
+    ]
+    used_faces: set[int] = set()
+    used_students: set[int] = set()
+    for confidence, face_index, student_index in sorted(pairs, reverse=True):
+        if face_index in used_faces or student_index in used_students:
+            continue
+        used_faces.add(face_index)
+        used_students.add(student_index)
+        results[face_index] = (known_embeddings[student_index][0], confidence)
+    return results
+
+
+def find_similar_student(
+    embedding: Sequence[float],
+    students: Sequence[Student],
+    minimum_confidence: float,
+    exclude_student_id: int | None = None,
+) -> tuple[Student | None, float]:
+    """Return an already registered student whose face matches this sample."""
+
+    known = [
+        (student, emb)
+        for student in students
+        if student.id != exclude_student_id
+        and (emb := deserialize_embedding(student.embedding))
+    ]
+    if not known:
+        return None, 0.0
+    return best_embedding_match(embedding, known, minimum_confidence)
+
+
 class FaceRecognitionEngine:
     """Run expensive face recognition periodically and cache identity boxes."""
 
@@ -224,15 +282,17 @@ class FaceRecognitionEngine:
             emb = deserialize_embedding(student.embedding)
             if emb:
                 known_embeddings.append((student, emb))
-        matches: list[FaceMatch] = []
+        embeddings: list[list[float] | None] = []
         for candidate in candidates:
             try:
-                embedding = provider.embed(crop_face(frame, candidate.box))
-                student, confidence = best_embedding_match(
-                    embedding, known_embeddings, settings.recognition_confidence
-                )
+                embeddings.append(provider.embed(crop_face(frame, candidate.box)))
             except (ValueError, RuntimeError):
-                student, confidence = None, 0.0
+                embeddings.append(None)
+        identities = assign_unique_identities(
+            embeddings, known_embeddings, settings.recognition_confidence
+        )
+        matches: list[FaceMatch] = []
+        for candidate, (student, confidence) in zip(candidates, identities):
             matches.append(
                 FaceMatch(
                     box=candidate.box,

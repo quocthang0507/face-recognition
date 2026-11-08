@@ -8,8 +8,14 @@ Hệ thống ứng dụng Trí tuệ Nhân tạo (AI) và Thị giác Máy tính
 
 *   **Nhận diện đa khuôn mặt thời gian thực**: Tự động phát hiện và nhận diện danh tính của nhiều học sinh trong khung hình từ nguồn camera/webcam.
 *   **Việt hóa Giao diện 100%**: Toàn bộ giao diện người dùng, nhãn cảnh báo (eyebrow), nhật ký hành vi và các phản hồi lỗi từ API/WebSocket được dịch thuật chuẩn xác sang tiếng Việt.
+*   **Quy trình điểm danh đầy đủ (v1.3)**:
+    *   Ghi nhận giờ vào lớp, tự đánh dấu **đi muộn** sau `FACE_APP_LATE_AFTER_MINUTES` phút (mặc định 15).
+    *   Giáo viên **điểm danh thủ công** / đánh dấu vắng kèm lý do; camera không ghi đè quyết định thủ công.
+    *   Đặt tên buổi học, xem **tổng kết khi kết thúc phiên**, **lịch sử phiên** và **xuất bảng điểm danh CSV** (mở được bằng Excel).
+    *   Cập nhật ảnh khuôn mặt, xóa học sinh, chặn đăng ký trùng khuôn mặt, cảnh báo học sinh chưa có ảnh.
+    *   Chi tiết rà soát và quy trình: [docs/review-2026-11.md](docs/review-2026-11.md).
 *   **Quản lý phiên gọi ngẫu nhiên (Random Student Picker)**:
-    *   Hỗ trợ giáo viên chọn ngẫu nhiên một học sinh trong danh sách những người có mặt để trả bài.
+    *   Hỗ trợ giáo viên chọn ngẫu nhiên một học sinh trong danh sách những người có mặt để trả bài (không gọi học sinh vắng).
     *   Tự động lưu trạng thái đã gọi/chưa gọi trong phiên học hiện tại để tránh trùng lặp.
 *   **Phát hiện hành vi bất thường**:
     *   Có thể bật hoặc tắt từng loại kiểm tra trực tiếp trên Dashboard mà không cần bắt đầu phiên điểm danh.

@@ -85,15 +85,21 @@
           </article>
 
           <article class="picker-card glass">
-            <p class="eyebrow">GỌI NGẪU NHIÊN</p>
-            <h2>Gọi trả bài</h2>
-            <p>Bắt đầu phiên khi cần điểm danh, lưu audit log và gọi học sinh trả bài.</p>
+            <p class="eyebrow">PHIÊN HỌC &amp; GỌI TRẢ BÀI</p>
+            <h2>Điều khiển phiên</h2>
+            <p>Bắt đầu phiên để camera tự điểm danh, ghi nhật ký và gọi học sinh trả bài.</p>
+            <input id="session-title-input" class="session-title-input" placeholder="Tên buổi học (VD: Toán 7A - Tiết 2)" maxlength="120" />
+            <p id="session-meta" class="session-meta"></p>
             <div class="session-actions">
               <button id="start-session-button" class="button secondary">Bắt đầu phiên</button>
               <button id="finish-session-button" class="button ghost" disabled>Kết thúc</button>
             </div>
             <button id="pick-button" class="button primary full" disabled>Gọi ngẫu nhiên</button>
             <button id="reset-called-button" class="button ghost full" disabled>Reset lượt gọi</button>
+            <div class="session-actions">
+              <button id="export-session-button" class="button ghost" disabled>Xuất CSV</button>
+              <button id="history-button" class="button ghost">Lịch sử phiên</button>
+            </div>
           </article>
 
           <article class="register-card glass">
@@ -124,11 +130,12 @@
               <p class="eyebrow">ĐIỂM DANH</p>
               <h2>Danh sách lớp</h2>
             </div>
+            <span id="attendance-hint" class="table-hint">Bấm vào trạng thái để điểm danh thủ công</span>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Học sinh</th><th>Mã số</th><th>Có mặt</th><th>Trả bài</th></tr>
+                <tr><th>Học sinh</th><th>Mã số</th><th>Điểm danh</th><th>Giờ vào</th><th>Trả bài</th><th>Thao tác</th></tr>
               </thead>
               <tbody id="student-list"></tbody>
             </table>
@@ -158,7 +165,7 @@
           <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block;"></span>
           Hệ thống đang hoạt động ổn định
         </span>
-        <span>Phiên bản 1.2.0</span>
+        <span>Phiên bản 1.3.0</span>
       </div>
     </footer>
 
@@ -240,6 +247,17 @@
         <button id="close-settings-button" class="button primary full">Lưu & Đóng</button>
       </div>
     </div>
+
+    <div id="report-modal" class="modal">
+      <div class="modal-panel report-panel glass">
+        <p id="report-eyebrow" class="eyebrow">BÁO CÁO PHIÊN HỌC</p>
+        <h2 id="report-title">Tổng kết</h2>
+        <div id="report-body" class="report-body"></div>
+        <button id="close-report-button" class="button primary full">Đóng</button>
+      </div>
+    </div>
+
+    <input id="reenroll-input" type="file" accept="image/jpeg,image/png,image/webp" hidden />
 
     <div id="toast-container" class="toast-container"></div>
     <script src="/static/js/app.js"></script>

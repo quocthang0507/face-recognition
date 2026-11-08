@@ -5,8 +5,10 @@ import numpy as np
 
 from src.face_engine import (
     FaceRecognitionEngine,
+    assign_unique_identities,
     best_embedding_match,
     cosine_similarity,
+    find_similar_student,
 )
 from src.models import Student
 from src.stream_processor import AttendanceStabilizer
@@ -97,3 +99,39 @@ def test_identity_cache_moves_with_landmark_track_between_recognition_runs() -> 
     assert first[0].student_id == 7
     assert moved[0].student_id == 7
     assert moved[0].box == BoundingBox(5, 3, 10, 10)
+
+
+def test_one_student_is_never_assigned_to_two_faces() -> None:
+    student = Student(id=1, student_code="S01", fullname="An", embedding="[1,0]")
+
+    results = assign_unique_identities(
+        [[1.0, 0.05], [1.0, 0.0]], [(student, [1.0, 0.0])], 80
+    )
+
+    assert results[1][0] is student
+    assert results[0][0] is None
+
+
+def test_find_similar_student_detects_duplicate_registration() -> None:
+    student = Student(id=1, student_code="S01", fullname="An", embedding="[1,0]")
+
+    duplicate, _ = find_similar_student([1.0, 0.01], [student], 90)
+    excluded, _ = find_similar_student(
+        [1.0, 0.01], [student], 90, exclude_student_id=1
+    )
+
+    assert duplicate is student
+    assert excluded is None
+
+
+def test_attendance_stabilizer_reset_allows_check_in_in_next_session() -> None:
+    stabilizer = AttendanceStabilizer(required_frames=2)
+    match = FaceMatch(BoundingBox(0, 0, 10, 10), 3, "S03", "Minh", 90)
+    stabilizer.observe([match])
+    assert stabilizer.observe([match]) == [3]
+    stabilizer.observe([match])
+
+    stabilizer.reset()
+
+    assert stabilizer.observe([match]) == []
+    assert stabilizer.observe([match]) == [3]

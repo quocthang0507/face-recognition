@@ -13,6 +13,13 @@ def _as_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).lower() in {"1", "true", "yes", "on"}
 
 
+def _as_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime settings for the classroom application."""
@@ -63,6 +70,21 @@ class Settings:
     attendance_frames: int = 5
     behavior_cooldown_seconds: float = 10.0
     retention_days: int = 30
+    late_after_minutes: int = field(
+        default_factory=lambda: _as_int("FACE_APP_LATE_AFTER_MINUTES", 15)
+    )
+    duplicate_face_confidence: float = 90.0
+    login_max_failures: int = 5
+    login_lockout_seconds: int = 5 * 60
+
+    @property
+    def uses_default_credentials(self) -> bool:
+        """Whether the development password or token secret is still in use."""
+
+        return (
+            self.teacher_password == "change-me"
+            or self.token_secret == "development-only-change-this-secret"
+        )
 
     @property
     def avatar_dir(self) -> Path:

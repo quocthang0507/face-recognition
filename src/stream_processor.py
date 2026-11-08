@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
@@ -39,6 +39,8 @@ class FrameResult:
     behaviors: list[dict[str, object]]
     alerts: list[dict[str, object]]
     errors: list[str]
+    attendance: list[dict[str, object]] = field(default_factory=list)
+    session_id: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable frame payload."""
@@ -50,6 +52,8 @@ class FrameResult:
             "behaviors": self.behaviors,
             "alerts": self.alerts,
             "errors": self.errors,
+            "attendance": self.attendance,
+            "session_id": self.session_id,
         }
 
 
@@ -59,6 +63,11 @@ class AttendanceStabilizer:
     def __init__(self, required_frames: int | None = None) -> None:
         self.required_frames = required_frames or settings.attendance_frames
         self._streaks: dict[int, int] = defaultdict(int)
+
+    def reset(self) -> None:
+        """Forget streaks, e.g. when a new lesson starts on the same camera."""
+
+        self._streaks.clear()
 
     def observe(self, matches: list[FaceMatch]) -> list[int]:
         """Return student IDs that have reached the attendance threshold."""
@@ -93,6 +102,7 @@ class StreamProcessor:
         self.face_engine = face_engine or FaceRecognitionEngine()
         self.behavior_engine = behavior_engine or BehaviorEngine()
         self.attendance = AttendanceStabilizer()
+        self._session_id: int | None = None
 
     @property
     def enabled_behaviors(self) -> frozenset[str]:
@@ -133,9 +143,21 @@ class StreamProcessor:
         except FaceEngineUnavailable as exc:
             matches, refreshed = [], False
             errors.append(str(exc))
+        current_session_id = active_session.id if active_session else None
+        if current_session_id != self._session_id:
+            # Streaks from a previous lesson must not leak into the new one,
+            # otherwise students already counted would never reach the
+            # threshold again and stay absent.
+            self.attendance.reset()
+            self._session_id = current_session_id
+        checked_in: list[dict[str, object]] = []
         if active_session and refreshed:
+            names = {match.student_id: match.fullname for match in matches}
             for student_id in self.attendance.observe(matches):
-                ClassroomService.mark_present(db, active_session.id, student_id)
+                if ClassroomService.mark_present(db, active_session.id, student_id):
+                    checked_in.append(
+                        {"student_id": student_id, "fullname": names.get(student_id)}
+                    )
         alerts = self._save_alerts(frame, behaviors, matches, active_session, db)
         draw_overlay(frame, matches, behaviors)
         encoded = encode_jpeg(frame)
@@ -145,6 +167,8 @@ class StreamProcessor:
             behaviors=[behavior.to_dict() for behavior in behaviors],
             alerts=alerts,
             errors=errors,
+            attendance=checked_in,
+            session_id=current_session_id,
         )
 
     def _save_alerts(
@@ -156,7 +180,7 @@ class StreamProcessor:
         db: Session,
     ) -> list[dict[str, object]]:
         alerts: list[dict[str, object]] = []
-        snapshot: bytes | None = None
+        snapshot_path: str | None = None
         for behavior in behaviors:
             identity = next(
                 (
@@ -177,9 +201,9 @@ class StreamProcessor:
                     "snapshot_url": None,
                 }
                 if active_session is not None:
-                    if snapshot is None:
-                        snapshot = encode_jpeg(frame)
-                    snapshot_path = self.storage.save_snapshot(snapshot)
+                    if snapshot_path is None:
+                        # One evidence image per frame, shared by every alert.
+                        snapshot_path = self.storage.save_snapshot(encode_jpeg(frame))
                     log = BehaviorLogService.create(
                         db,
                         session_id=active_session.id,

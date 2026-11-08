@@ -273,3 +273,26 @@ th { color: var(--muted); font-size: 11px; letter-spacing: 1px; text-transform: 
   .camera-actions { flex-wrap: wrap; }
   .video-stage, .camera-placeholder { min-height: 280px; height: 280px; }
 }
+
+/* v1.3 — attendance workflow */
+.session-title-input { margin-bottom: 8px; font-size: 13px; }
+.session-meta { margin: 0 0 10px !important; min-height: 16px; font-size: 12px !important; }
+.picker-card .session-actions + .button.full + .button.full + .session-actions { margin-top: 9px; }
+.table-hint { color: var(--muted); font-size: 11px; }
+.badge.late { color: var(--amber); background: rgba(255, 189, 74, .12); }
+.badge.warn { color: var(--red); background: rgba(255, 95, 119, .1); }
+button.badge { border: 0; cursor: pointer; font: inherit; font-size: 11px; font-weight: 700; }
+button.badge:disabled { cursor: default; }
+.source-tag { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.row-actions { display: flex; gap: 6px; }
+.row-actions .button { padding: 6px 8px; font-size: 11px; }
+.report-panel { width: min(640px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; }
+.report-body { display: grid; gap: 12px; margin: 16px 0 6px; text-align: left; font-size: 13px; }
+.report-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.report-grid div { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--subtle); }
+.report-grid span { display: block; color: var(--muted); font-size: 11px; }
+.report-grid strong { display: block; margin-top: 4px; font-size: 19px; }
+.history-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.history-item small { display: block; margin-top: 3px; color: var(--muted); }
+.history-item .button { padding: 7px 10px; font-size: 11px; white-space: nowrap; }
+.absent-list { margin: 0; padding-left: 18px; color: var(--muted); }

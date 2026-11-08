@@ -16,6 +16,21 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(value: datetime | None) -> datetime | None:
+    """Attach UTC to naive timestamps returned by SQLite."""
+
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def iso_utc(value: datetime | None) -> str | None:
+    """Serialize a stored timestamp as ISO 8601 with an explicit UTC offset."""
+
+    normalized = as_utc(value)
+    return normalized.isoformat() if normalized else None
+
+
 class Student(Base):
     """A registered student with a non-reversible face embedding."""
 
@@ -48,6 +63,7 @@ class ClassroomSession(Base):
         DateTime(timezone=True), nullable=True
     )
     status: Mapped[str] = mapped_column(String(10), default="ACTIVE", index=True)
+    title: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     students: Mapped[list["SessionStudent"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
@@ -69,6 +85,11 @@ class SessionStudent(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), index=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), index=True)
     is_present: Mapped[bool] = mapped_column(Boolean, default=False)
+    checked_in_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attendance_source: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
     is_called: Mapped[bool] = mapped_column(Boolean, default=False)
     called_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

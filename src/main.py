@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import csv
+import io
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -13,7 +16,6 @@ from fastapi import (
     Cookie,
     Depends,
     FastAPI,
-    File,
     Form,
     HTTPException,
     Request,
@@ -23,38 +25,64 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import (
     AuthenticationError,
+    LoginThrottle,
     issue_teacher_token,
     password_matches,
     verify_teacher_token,
 )
 from .config import BASE_DIR, settings
 from .database import SessionLocal, create_tables, get_db
-from .face_engine import FaceEngineUnavailable, FaceRecognitionEngine
-from .models import Student
+from .face_engine import (
+    FaceEngineUnavailable,
+    FaceRecognitionEngine,
+    find_similar_student,
+)
+from .models import ClassroomSession, SessionStudent, Student, as_utc, iso_utc
 from .services import (
     BehaviorLogService,
     ClassroomService,
     DomainError,
+    NotFoundError,
     StudentService,
+    has_face_embedding,
+    is_late,
 )
 from .storage import PrivateStorage
 from .stream_processor import BEHAVIOR_LABELS, StreamProcessor, decode_jpeg
 
+logger = logging.getLogger("smart_classroom")
 storage = PrivateStorage()
+login_throttle = LoginThrottle()
+_health_engine: FaceRecognitionEngine | None = None
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class LoginRequest(BaseModel):
     """Teacher login payload."""
 
     password: str
+
+
+class StartSessionRequest(BaseModel):
+    """Optional lesson metadata entered by the teacher."""
+
+    title: str | None = Field(default=None, max_length=120)
+
+
+class AttendanceUpdate(BaseModel):
+    """Manual attendance correction by the teacher."""
+
+    present: bool
+    note: str | None = Field(default=None, max_length=200)
 
 
 def _cleanup_expired_logs() -> None:
@@ -77,6 +105,11 @@ async def lifespan(_: FastAPI):
     """Initialize tables and retention cleanup at application startup."""
 
     create_tables()
+    if settings.uses_default_credentials:
+        logger.warning(
+            "Đang dùng mật khẩu/khóa ký mặc định. Hãy đặt FACE_APP_TEACHER_PASSWORD "
+            "và FACE_APP_TOKEN_SECRET trước khi triển khai cho người dùng thật."
+        )
     await asyncio.to_thread(_cleanup_expired_logs)
     asyncio.create_task(asyncio.to_thread(_preload_models))
     cleanup_task = asyncio.create_task(_retention_cleanup_loop())
@@ -126,7 +159,8 @@ def _require_secure_request(request: Request) -> None:
 
 
 def _domain_error(exc: DomainError) -> HTTPException:
-    return HTTPException(status_code=409, detail=str(exc))
+    status = 404 if isinstance(exc, NotFoundError) else 409
+    return HTTPException(status_code=status, detail=str(exc))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -144,11 +178,23 @@ def favicon() -> FileResponse:
 
 
 @app.post("/api/auth/login")
-def login(payload: LoginRequest, response: Response) -> dict[str, str]:
+def login(
+    payload: LoginRequest, request: Request, response: Response
+) -> dict[str, str]:
     """Authenticate the teacher and set an HttpOnly cookie."""
 
+    client = request.client.host if request.client else "unknown"
+    retry_after = login_throttle.retry_after(client)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Nhập sai quá nhiều lần. Thử lại sau {retry_after} giây",
+            headers={"Retry-After": str(retry_after)},
+        )
     if not password_matches(payload.password):
+        login_throttle.record_failure(client)
         raise HTTPException(status_code=401, detail="Mật khẩu giáo viên không chính xác")
+    login_throttle.record_success(client)
     response.set_cookie(
         key=settings.cookie_name,
         value=issue_teacher_token(),
@@ -179,10 +225,12 @@ def auth_status() -> dict[str, str]:
 def health() -> dict[str, object]:
     """Expose runtime readiness without leaking student data."""
 
-    face_engine = FaceRecognitionEngine()
+    global _health_engine
+    if _health_engine is None:
+        _health_engine = FaceRecognitionEngine()
     return {
         "status": "ok",
-        "face_detection": face_engine.detection_available,
+        "face_detection": _health_engine.detection_available,
         "secure_transport_only": settings.secure_transport_only,
     }
 
@@ -192,6 +240,46 @@ def list_students(db: Annotated[Session, Depends(get_db)]) -> list[dict[str, obj
     """Return registered students."""
 
     return [_student_payload(student) for student in StudentService.list_all(db)]
+
+
+async def _read_face_image(
+    image: UploadFile, db: Session, exclude_student_id: int | None = None
+) -> tuple[list[float], bytes]:
+    """Validate an uploaded image, extract one embedding and reject duplicates."""
+
+    if image.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=415, detail="Yêu cầu định dạng ảnh JPEG, PNG hoặc WebP"
+        )
+    content = await image.read(MAX_IMAGE_BYTES + 1)
+    if not content or len(content) > MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=413, detail="Dung lượng ảnh phải nằm trong khoảng từ 1B đến 5MB"
+        )
+    try:
+        frame = await asyncio.to_thread(decode_jpeg, content)
+        embedding = await asyncio.to_thread(
+            FaceRecognitionEngine().registration_embedding, frame
+        )
+    except FaceEngineUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    duplicate, confidence = find_similar_student(
+        embedding,
+        StudentService.list_all(db),
+        settings.duplicate_face_confidence,
+        exclude_student_id=exclude_student_id,
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Khuôn mặt này trùng với học sinh đã đăng ký "
+                f"{duplicate.fullname} ({duplicate.student_code}, {confidence:.0f}%)"
+            ),
+        )
+    return embedding, content
 
 
 @app.post("/register", include_in_schema=False, dependencies=[Depends(require_teacher)])
@@ -209,32 +297,56 @@ async def register_student(
 
     embedding = None
     avatar_path = None
-
     if image is not None and image.filename:
-        content = await image.read()
-        if content:
-            if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-                raise HTTPException(status_code=415, detail="Yêu cầu định dạng ảnh JPEG, PNG hoặc WebP")
-            if len(content) > 5 * 1024 * 1024:
-                raise HTTPException(status_code=413, detail="Dung lượng ảnh phải nằm trong khoảng từ 1B đến 5MB")
-            try:
-                frame = await asyncio.to_thread(decode_jpeg, content)
-                embedding = await asyncio.to_thread(
-                    FaceRecognitionEngine().registration_embedding, frame
-                )
-                avatar_path = storage.save_avatar(content)
-            except FaceEngineUnavailable as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        embedding, content = await _read_face_image(image, db)
+        avatar_path = storage.save_avatar(content)
 
     try:
         student = StudentService.register(
             db, student_code, fullname, embedding, avatar_path
         )
     except DomainError as exc:
+        if avatar_path:
+            storage.delete_avatar(avatar_path)
         raise _domain_error(exc) from exc
     return _student_payload(student)
+
+
+@app.post("/api/students/{student_id}/face", dependencies=[Depends(require_teacher)])
+async def update_student_face(
+    student_id: int,
+    image: UploadFile,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Replace the face sample of a student (re-enrollment)."""
+
+    try:
+        StudentService.get(db, student_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    embedding, content = await _read_face_image(
+        image, db, exclude_student_id=student_id
+    )
+    avatar_path = storage.save_avatar(content)
+    student, previous = StudentService.update_face(
+        db, student_id, embedding, avatar_path
+    )
+    if previous:
+        storage.delete_avatar(previous)
+    return _student_payload(student)
+
+
+@app.delete("/api/students/{student_id}", dependencies=[Depends(require_teacher)])
+def delete_student(
+    student_id: int, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, str]:
+    """Delete a student, the face sample and attendance history."""
+
+    try:
+        StudentService.delete(db, student_id, storage)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return {"status": "deleted"}
 
 
 @app.get("/api/avatars/{name}", dependencies=[Depends(require_teacher)])
@@ -248,14 +360,19 @@ def get_avatar(name: str) -> Response:
 
 
 @app.post("/api/sessions", dependencies=[Depends(require_teacher)])
-def start_session(db: Annotated[Session, Depends(get_db)]) -> dict[str, object]:
+def start_session(
+    db: Annotated[Session, Depends(get_db)],
+    payload: StartSessionRequest | None = None,
+) -> dict[str, object]:
     """Start a classroom session."""
 
     try:
-        classroom_session = ClassroomService.start_session(db)
+        classroom_session = ClassroomService.start_session(
+            db, payload.title if payload else None
+        )
     except DomainError as exc:
         raise _domain_error(exc) from exc
-    return _session_payload(db, classroom_session.id)
+    return _session_payload(db, classroom_session)
 
 
 @app.get("/api/sessions/active", dependencies=[Depends(require_teacher)])
@@ -263,20 +380,128 @@ def active_session(db: Annotated[Session, Depends(get_db)]) -> dict[str, object]
     """Return the active classroom session and attendance."""
 
     classroom_session = ClassroomService.get_active_session(db)
-    return _session_payload(db, classroom_session.id) if classroom_session else None
+    return _session_payload(db, classroom_session) if classroom_session else None
+
+
+@app.get("/api/sessions", dependencies=[Depends(require_teacher)])
+def session_history(
+    db: Annotated[Session, Depends(get_db)], limit: int = 20
+) -> list[dict[str, object]]:
+    """Return recent lessons with attendance summaries."""
+
+    return [
+        {
+            **_session_header(classroom_session),
+            "summary": ClassroomService.summary(db, classroom_session).to_dict(),
+        }
+        for classroom_session in ClassroomService.list_sessions(
+            db, max(1, min(limit, 100))
+        )
+    ]
+
+
+@app.get("/api/sessions/{session_id}", dependencies=[Depends(require_teacher)])
+def session_detail(
+    session_id: int, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, object]:
+    """Return one lesson (active or finished) with full attendance."""
+
+    try:
+        classroom_session = ClassroomService.get_session(db, session_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return _session_payload(db, classroom_session)
 
 
 @app.post("/api/sessions/{session_id}/finish", dependencies=[Depends(require_teacher)])
 def finish_session(
     session_id: int, db: Annotated[Session, Depends(get_db)]
 ) -> dict[str, object]:
-    """Finish the requested classroom session."""
+    """Finish the requested classroom session and return its summary."""
 
     try:
         classroom_session = ClassroomService.finish_session(db, session_id)
     except DomainError as exc:
         raise _domain_error(exc) from exc
-    return {"id": classroom_session.id, "status": classroom_session.status}
+    return {
+        **_session_header(classroom_session),
+        "summary": ClassroomService.summary(db, classroom_session).to_dict(),
+    }
+
+
+@app.put(
+    "/api/sessions/{session_id}/attendance/{student_id}",
+    dependencies=[Depends(require_teacher)],
+)
+def update_attendance(
+    session_id: int,
+    student_id: int,
+    payload: AttendanceUpdate,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Manually confirm or correct one student's attendance."""
+
+    try:
+        state = ClassroomService.set_attendance(
+            db, session_id, student_id, payload.present, payload.note
+        )
+        classroom_session = ClassroomService.get_session(db, session_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return _attendance_payload(state, classroom_session)
+
+
+@app.get(
+    "/api/sessions/{session_id}/export.csv",
+    dependencies=[Depends(require_teacher)],
+)
+def export_session_csv(
+    session_id: int, db: Annotated[Session, Depends(get_db)]
+) -> Response:
+    """Download the attendance sheet of one lesson as an Excel-friendly CSV."""
+
+    try:
+        classroom_session = ClassroomService.get_session(db, session_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "STT",
+            "Mã học sinh",
+            "Họ và tên",
+            "Trạng thái",
+            "Giờ vào lớp",
+            "Hình thức",
+            "Đã gọi trả bài",
+            "Ghi chú",
+        ]
+    )
+    for index, state in enumerate(
+        ClassroomService.attendance(db, session_id), start=1
+    ):
+        writer.writerow(
+            [
+                index,
+                state.student.student_code,
+                state.student.fullname,
+                _attendance_label(state, classroom_session),
+                _local_time(state.checked_in_at),
+                {"AUTO": "Camera", "MANUAL": "Giáo viên"}.get(
+                    state.attendance_source or "", ""
+                ),
+                "Có" if state.is_called else "",
+                state.note or "",
+            ]
+        )
+    filename = f"diem-danh-phien-{session_id}.csv"
+    # UTF-8 BOM so Excel on Windows shows Vietnamese characters correctly.
+    return Response(
+        content="\ufeff" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/sessions/{session_id}/pick", dependencies=[Depends(require_teacher)])
@@ -310,9 +535,11 @@ def reset_called(
 
 @app.get("/api/behaviors", dependencies=[Depends(require_teacher)])
 def recent_behaviors(
-    db: Annotated[Session, Depends(get_db)], limit: int = 30
+    db: Annotated[Session, Depends(get_db)],
+    limit: int = 30,
+    session_id: int | None = None,
 ) -> list[dict[str, object]]:
-    """Return recent behavior audit logs."""
+    """Return recent behavior audit logs, optionally for one lesson."""
 
     safe_limit = max(1, min(limit, 100))
     return [
@@ -320,11 +547,13 @@ def recent_behaviors(
             "id": log.id,
             "behavior_type": log.behavior_type,
             "label": BEHAVIOR_LABELS.get(log.behavior_type, log.behavior_type),
+            "session_id": log.session_id,
+            "student_id": log.student_id,
             "fullname": log.student.fullname if log.student else "Không rõ",
-            "timestamp": log.timestamp.isoformat(),
+            "timestamp": iso_utc(log.timestamp),
             "snapshot_url": f"/api/snapshots/{log.snapshot_path}",
         }
-        for log in BehaviorLogService.list_recent(db, safe_limit)
+        for log in BehaviorLogService.list_recent(db, safe_limit, session_id)
     ]
 
 
@@ -432,24 +661,62 @@ def _student_payload(student: Student) -> dict[str, object]:
         "id": student.id,
         "student_code": student.student_code,
         "fullname": student.fullname,
+        "has_face": has_face_embedding(student),
         "avatar_url": (
             f"/api/avatars/{student.avatar_path}" if student.avatar_path else None
         ),
     }
 
 
-def _session_payload(db: Session, session_id: int) -> dict[str, object]:
-    attendance = ClassroomService.attendance(db, session_id)
+def _session_header(classroom_session: ClassroomSession) -> dict[str, object]:
     return {
-        "id": session_id,
-        "status": "ACTIVE",
+        "id": classroom_session.id,
+        "title": classroom_session.title,
+        "status": classroom_session.status,
+        "created_at": iso_utc(classroom_session.created_at),
+        "finished_at": iso_utc(classroom_session.finished_at),
+        "late_after_minutes": settings.late_after_minutes,
+    }
+
+
+def _attendance_payload(
+    state: SessionStudent, classroom_session: ClassroomSession
+) -> dict[str, object]:
+    return {
+        **_student_payload(state.student),
+        "is_present": state.is_present,
+        "is_late": is_late(state, classroom_session),
+        "checked_in_at": iso_utc(state.checked_in_at),
+        "attendance_source": state.attendance_source,
+        "note": state.note,
+        "is_called": state.is_called,
+        "called_at": iso_utc(state.called_at),
+    }
+
+
+def _session_payload(
+    db: Session, classroom_session: ClassroomSession
+) -> dict[str, object]:
+    attendance = ClassroomService.attendance(db, classroom_session.id)
+    return {
+        **_session_header(classroom_session),
+        "summary": ClassroomService.summary(db, classroom_session).to_dict(),
         "students": [
-            {
-                **_student_payload(state.student),
-                "is_present": state.is_present,
-                "is_called": state.is_called,
-                "called_at": state.called_at.isoformat() if state.called_at else None,
-            }
-            for state in attendance
+            _attendance_payload(state, classroom_session) for state in attendance
         ],
     }
+
+
+def _attendance_label(
+    state: SessionStudent, classroom_session: ClassroomSession
+) -> str:
+    if not state.is_present:
+        return "Vắng"
+    return "Đi muộn" if is_late(state, classroom_session) else "Có mặt"
+
+
+def _local_time(value) -> str:
+    """Format a UTC timestamp in the server's local time zone for reports."""
+
+    normalized = as_utc(value)
+    return normalized.astimezone().strftime("%H:%M:%S %d/%m/%Y") if normalized else ""

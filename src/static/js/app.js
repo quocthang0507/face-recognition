@@ -176,7 +176,12 @@ function connectSocket() {
     
     state.lastFaceDetected = (payload.faces || []).length > 0;
     updatePickButtonState();
-    if ((payload.faces || []).some((face) => face.student_id)) refreshSession();
+    // Refresh the roster only when the server reports a change instead of
+    // polling the API on every frame that contains a recognised face.
+    const checkedIn = payload.attendance || [];
+    for (const item of checkedIn) toast(`Đã điểm danh: ${item.fullname || "học sinh"}`);
+    const sessionChanged = (payload.session_id || null) !== (state.session ? state.session.id : null);
+    if (checkedIn.length || sessionChanged) refreshSession();
   };
   state.socket.onclose = () => {
     state.socket = null;
@@ -251,12 +256,25 @@ async function refreshDashboard() {
 }
 
 async function refreshSession() {
+  if (state.refreshingSession) {
+    state.refreshQueued = true;
+    return;
+  }
+  state.refreshingSession = true;
   try {
+    const previousId = state.session ? state.session.id : null;
     state.session = await api("/api/sessions/active");
     state.students = state.session ? state.session.students : await api("/api/students");
     renderSession();
+    if ((state.session ? state.session.id : null) !== previousId) refreshAlerts();
   } catch (error) {
     if (!error.message.includes("hết hạn")) toast(error.message, true);
+  } finally {
+    state.refreshingSession = false;
+    if (state.refreshQueued) {
+      state.refreshQueued = false;
+      refreshSession();
+    }
   }
 }
 
@@ -269,43 +287,240 @@ function updatePickButtonState() {
   }
 }
 
+function formatTime(value) {
+  return value ? new Date(value).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : "";
+}
+
+function formatDateTime(value) {
+  return value ? new Date(value).toLocaleString("vi-VN") : "";
+}
+
+function attendanceBadge(student, active) {
+  let label = "Chưa thấy";
+  let css = "absent";
+  if (student.is_present) {
+    label = student.is_late ? "Đi muộn" : "Có mặt";
+    css = student.is_late ? "late" : "present";
+  } else if (student.attendance_source === "MANUAL") {
+    label = "Vắng";
+    css = "warn";
+  }
+  if (!active) return `<span class="badge ${css}">${label}</span>`;
+  const title = student.is_present ? "Bấm để đánh dấu vắng" : "Bấm để xác nhận có mặt";
+  return `<button type="button" class="badge ${css}" data-attendance="${student.id}" data-present="${student.is_present ? "1" : "0"}" title="${title}">${label}</button>`;
+}
+
 function renderSession() {
   const active = Boolean(state.session);
+  const summary = active ? state.session.summary : null;
   const present = state.students.filter((student) => student.is_present).length;
   const called = state.students.filter((student) => student.is_called).length;
-  $("#session-stat").textContent = active ? `#${state.session.id} Đang hoạt động` : "Chưa bắt đầu";
-  $("#present-stat").textContent = `${present} / ${state.students.length}`;
+  const sessionName = active ? (state.session.title || `Phiên #${state.session.id}`) : "Chưa bắt đầu";
+  $("#session-stat").textContent = sessionName;
+  $("#present-stat").textContent = summary && summary.late
+    ? `${present} / ${state.students.length} (${summary.late} muộn)`
+    : `${present} / ${state.students.length}`;
   $("#called-stat").textContent = String(called);
+  if (summary) $("#alert-stat").textContent = String(summary.behaviors);
+  $("#session-meta").textContent = active
+    ? `Bắt đầu lúc ${formatTime(state.session.created_at)} · tính muộn sau ${state.session.late_after_minutes} phút`
+    : "";
+  $("#session-title-input").disabled = active;
   $("#start-session-button").disabled = active;
   $("#finish-session-button").disabled = !active;
+  $("#export-session-button").disabled = !active;
+  $("#attendance-hint").style.visibility = active ? "visible" : "hidden";
   updatePickButtonState();
   $("#reset-called-button").disabled = !active || !called;
   $("#student-list").innerHTML = state.students.map((student) => `
     <tr>
-      <td><div class="student-cell"><span class="mini-avatar">${initials(student.fullname)}</span>${escapeHtml(student.fullname)}</div></td>
+      <td><div class="student-cell"><span class="mini-avatar">${initials(student.fullname)}</span><span>${escapeHtml(student.fullname)}${student.has_face ? "" : '<span class="source-tag" style="color: var(--red)">Chưa có ảnh khuôn mặt</span>'}</span></div></td>
       <td>${escapeHtml(student.student_code)}</td>
-      <td><span class="badge ${student.is_present ? "present" : "absent"}">${student.is_present ? "Có mặt" : "Chưa thấy"}</span></td>
+      <td>${active ? attendanceBadge(student, true) : '<span class="badge absent">-</span>'}${student.note ? `<span class="source-tag">${escapeHtml(student.note)}</span>` : ""}</td>
+      <td>${student.checked_in_at ? `${formatTime(student.checked_in_at)}<span class="source-tag">${student.attendance_source === "MANUAL" ? "Giáo viên" : "Camera"}</span>` : "-"}</td>
       <td>${student.is_called ? '<span class="badge called">Đã gọi</span>' : "-"}</td>
+      <td><div class="row-actions">
+        <button type="button" class="button ghost" data-reenroll="${student.id}" title="Cập nhật ảnh khuôn mặt">${student.has_face ? "Ảnh" : "+ Ảnh"}</button>
+        <button type="button" class="button danger" data-delete="${student.id}" title="Xóa học sinh">Xóa</button>
+      </div></td>
     </tr>
-  `).join("") || '<tr><td colspan="4">Chưa có học sinh đăng ký.</td></tr>';
+  `).join("") || '<tr><td colspan="6">Chưa có học sinh đăng ký.</td></tr>';
+}
+
+async function toggleAttendance(studentId, currentlyPresent) {
+  if (!state.session) return;
+  const student = state.students.find((item) => item.id === studentId);
+  let note = null;
+  if (currentlyPresent) {
+    note = window.prompt(`Đánh dấu ${student ? student.fullname : "học sinh"} vắng. Lý do (không bắt buộc, VD: có phép):`, "");
+    if (note === null) return;
+  }
+  try {
+    await api(`/api/sessions/${state.session.id}/attendance/${studentId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ present: !currentlyPresent, note: note || null }),
+    });
+    await refreshSession();
+  } catch (error) { toast(error.message, true); }
+}
+
+async function deleteStudent(studentId) {
+  const student = state.students.find((item) => item.id === studentId);
+  const name = student ? student.fullname : "học sinh này";
+  if (!window.confirm(`Xóa ${name}? Ảnh khuôn mặt và lịch sử điểm danh của học sinh sẽ bị xóa.`)) return;
+  try {
+    await api(`/api/students/${studentId}`, { method: "DELETE" });
+    await refreshSession();
+    toast(`Đã xóa ${name}`);
+  } catch (error) { toast(error.message, true); }
+}
+
+async function captureCameraBlob() {
+  if (!state.stream || !camera.videoWidth) return null;
+  canvas.width = camera.videoWidth;
+  canvas.height = camera.videoHeight;
+  canvas.getContext("2d").drawImage(camera, 0, 0);
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+}
+
+async function uploadFace(studentId, blob, filename) {
+  const data = new FormData();
+  data.set("image", blob, filename);
+  try {
+    await api(`/api/students/${studentId}/face`, { method: "POST", body: data });
+    await refreshSession();
+    toast("Đã cập nhật ảnh khuôn mặt");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function reenrollStudent(studentId) {
+  const blob = await captureCameraBlob();
+  if (blob && window.confirm("Chụp ảnh khuôn mặt từ camera đang bật? (Chọn Hủy để tải ảnh từ máy)")) {
+    await uploadFace(studentId, blob, "webcam.jpg");
+    return;
+  }
+  const input = $("#reenroll-input");
+  input.dataset.studentId = String(studentId);
+  input.value = "";
+  input.click();
+}
+
+function onStudentListClick(event) {
+  const attendance = event.target.closest("[data-attendance]");
+  if (attendance) {
+    toggleAttendance(Number(attendance.dataset.attendance), attendance.dataset.present === "1");
+    return;
+  }
+  const reenroll = event.target.closest("[data-reenroll]");
+  if (reenroll) {
+    reenrollStudent(Number(reenroll.dataset.reenroll));
+    return;
+  }
+  const remove = event.target.closest("[data-delete]");
+  if (remove) deleteStudent(Number(remove.dataset.delete));
+}
+
+function summaryGrid(summary) {
+  const cells = [
+    ["Sĩ số", summary.total],
+    ["Có mặt", summary.present],
+    ["Đi muộn", summary.late],
+    ["Vắng", summary.absent],
+    ["Đã gọi", summary.called],
+    ["Cảnh báo", summary.behaviors],
+  ];
+  return `<div class="report-grid">${cells.map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join("")}</div>`;
+}
+
+function exportSession(sessionId) {
+  window.location.href = `/api/sessions/${sessionId}/export.csv`;
+}
+
+async function showSessionReport(sessionId) {
+  try {
+    const detail = await api(`/api/sessions/${sessionId}`);
+    const absent = detail.students.filter((student) => !student.is_present);
+    $("#report-eyebrow").textContent = "BÁO CÁO PHIÊN HỌC";
+    $("#report-title").textContent = detail.title || `Phiên #${detail.id}`;
+    $("#report-body").innerHTML = `
+      <span style="color: var(--muted)">${formatDateTime(detail.created_at)}${detail.finished_at ? ` → ${formatTime(detail.finished_at)}` : " · đang diễn ra"}</span>
+      ${summaryGrid(detail.summary)}
+      <div><strong>Học sinh vắng (${absent.length})</strong>
+        ${absent.length ? `<ul class="absent-list">${absent.map((student) => `<li>${escapeHtml(student.fullname)} (${escapeHtml(student.student_code)})${student.note ? ` – ${escapeHtml(student.note)}` : ""}</li>`).join("")}</ul>` : '<p style="margin: 4px 0 0">Không có.</p>'}
+      </div>
+      <button type="button" class="button secondary full" data-export="${detail.id}">Tải bảng điểm danh (CSV/Excel)</button>
+    `;
+    $("#report-modal").classList.add("visible");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function showHistory() {
+  try {
+    const sessions = await api("/api/sessions?limit=30");
+    $("#report-eyebrow").textContent = "LỊCH SỬ";
+    $("#report-title").textContent = "Các phiên học gần đây";
+    $("#report-body").innerHTML = sessions.map((item) => `
+      <div class="history-item">
+        <div>
+          <strong>${escapeHtml(item.title || `Phiên #${item.id}`)}</strong>
+          <small>${formatDateTime(item.created_at)} · ${item.status === "ACTIVE" ? "Đang diễn ra" : "Đã kết thúc"}</small>
+          <small>Có mặt ${item.summary.present}/${item.summary.total} · muộn ${item.summary.late} · cảnh báo ${item.summary.behaviors}</small>
+        </div>
+        <div class="row-actions">
+          <button type="button" class="button ghost" data-report="${item.id}">Chi tiết</button>
+          <button type="button" class="button ghost" data-export="${item.id}">CSV</button>
+        </div>
+      </div>
+    `).join("") || "<p>Chưa có phiên học nào.</p>";
+    $("#report-modal").classList.add("visible");
+  } catch (error) { toast(error.message, true); }
+}
+
+function onReportClick(event) {
+  const exportButton = event.target.closest("[data-export]");
+  if (exportButton) {
+    exportSession(exportButton.dataset.export);
+    return;
+  }
+  const report = event.target.closest("[data-report]");
+  if (report) showSessionReport(report.dataset.report);
+}
+
+async function createSession() {
+  const title = $("#session-title-input").value.trim();
+  state.session = await api("/api/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title || null }),
+  });
+  state.students = state.session.students;
+  renderSession();
+  refreshAlerts();
 }
 
 async function startSession() {
   try {
-    state.session = await api("/api/sessions", { method: "POST" });
-    state.students = state.session.students;
-    renderSession();
+    await createSession();
     toast("Đã bắt đầu phiên học");
+    if (!state.stream) toast("Bật camera để hệ thống tự động điểm danh");
   } catch (error) { toast(error.message, true); }
 }
 
 async function finishSession() {
   if (!state.session) return;
+  const absent = state.students.filter((student) => !student.is_present).length;
+  const message = absent
+    ? `Kết thúc phiên? Còn ${absent} học sinh chưa được điểm danh và sẽ được ghi nhận là vắng.`
+    : "Kết thúc phiên học?";
+  if (!window.confirm(message)) return;
   try {
-    await api(`/api/sessions/${state.session.id}/finish`, { method: "POST" });
+    const finished = await api(`/api/sessions/${state.session.id}/finish`, { method: "POST" });
     state.session = null;
+    $("#session-title-input").value = "";
     await refreshSession();
     toast("Đã kết thúc phiên học");
+    showSessionReport(finished.id);
   } catch (error) { toast(error.message, true); }
 }
 
@@ -313,8 +528,7 @@ async function pickStudent() {
   let sessionId = state.session ? state.session.id : null;
   if (!sessionId) {
     try {
-      state.session = await api("/api/sessions", { method: "POST" });
-      state.students = state.session.students;
+      await createSession();
       sessionId = state.session.id;
       toast("Đã tự động bắt đầu phiên học mới");
     } catch (error) {
@@ -457,14 +671,12 @@ async function registerStudent(event) {
   const data = new FormData(event.target);
   
   if (!data.get("image").size) {
-    if (state.stream && camera.videoWidth) {
-      canvas.width = camera.videoWidth;
-      canvas.height = camera.videoHeight;
-      canvas.getContext("2d").drawImage(camera, 0, 0);
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+    const blob = await captureCameraBlob();
+    if (blob) {
       data.set("image", blob, "webcam.jpg");
     } else {
       data.delete("image");
+      if (!window.confirm("Chưa có ảnh khuôn mặt: học sinh sẽ không được camera tự điểm danh cho đến khi cập nhật ảnh. Vẫn đăng ký?")) return;
     }
   }
   
@@ -479,7 +691,8 @@ async function registerStudent(event) {
 
 async function refreshAlerts() {
   try {
-    state.alerts = await api("/api/behaviors");
+    const query = state.session ? `?session_id=${state.session.id}` : "";
+    state.alerts = await api(`/api/behaviors${query}`);
     renderAlerts();
   } catch (error) {
     if (!error.message.includes("hết hạn")) toast(error.message, true);
@@ -646,6 +859,7 @@ function initSettings() {
 }
 
 function addAlert(alert) {
+  if (alert.id && state.session && state.session.summary) state.session.summary.behaviors += 1;
   state.alerts.unshift(alert);
   state.alerts = state.alerts.slice(0, 30);
   renderAlerts();
@@ -663,7 +877,9 @@ function addAlert(alert) {
 }
 
 function renderAlerts() {
-  $("#alert-stat").textContent = String(state.alerts.length);
+  $("#alert-stat").textContent = state.session && state.session.summary
+    ? String(state.session.summary.behaviors)
+    : String(state.alerts.length);
   $("#clear-alerts-button").disabled = state.alerts.length === 0;
   $("#alert-list").innerHTML = state.alerts.map((alert) => `
     <div class="alert-item">
@@ -679,6 +895,7 @@ async function clearAlerts() {
   try {
     const result = await api("/api/behaviors", { method: "DELETE" });
     state.alerts = [];
+    if (state.session && state.session.summary) state.session.summary.behaviors = 0;
     renderAlerts();
     toast(`Đã xóa ${result.deleted} bản ghi nhật ký hành vi`);
   } catch (error) {
@@ -714,6 +931,16 @@ $("#clear-alerts-button").addEventListener("click", clearAlerts);
 $("#close-picker-button").addEventListener("click", () => $("#picker-modal").classList.remove("visible"));
 $("#toggle-register-button").addEventListener("click", () => $("#register-form").classList.toggle("hidden"));
 $("#register-form").addEventListener("submit", registerStudent);
+$("#student-list").addEventListener("click", onStudentListClick);
+$("#export-session-button").addEventListener("click", () => state.session && exportSession(state.session.id));
+$("#history-button").addEventListener("click", showHistory);
+$("#report-body").addEventListener("click", onReportClick);
+$("#close-report-button").addEventListener("click", () => $("#report-modal").classList.remove("visible"));
+$("#reenroll-input").addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  const studentId = Number(event.target.dataset.studentId);
+  if (file && studentId) uploadFace(studentId, file, file.name);
+});
 
 const setupOutsideClickClose = (modalSelector) => {
   const modal = $(modalSelector);
@@ -727,6 +954,7 @@ const setupOutsideClickClose = (modalSelector) => {
 };
 setupOutsideClickClose("#settings-modal");
 setupOutsideClickClose("#picker-modal");
+setupOutsideClickClose("#report-modal");
 $("#logout-button").addEventListener("click", async () => {
   stopCamera();
   await api("/api/auth/logout", { method: "POST" });

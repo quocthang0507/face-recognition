@@ -42,6 +42,14 @@ class PrivateStorage:
             self._safe_path(settings.avatar_dir, name).read_bytes()
         )
 
+    def delete_avatar(self, name: str) -> None:
+        """Delete an encrypted avatar if it still exists."""
+
+        try:
+            self._safe_path(settings.avatar_dir, name).unlink()
+        except FileNotFoundError:
+            pass
+
     def save_snapshot(self, content: bytes) -> str:
         """Store a JPEG evidence snapshot with private filesystem permissions."""
 
