@@ -135,3 +135,15 @@ def test_attendance_stabilizer_reset_allows_check_in_in_next_session() -> None:
 
     assert stabilizer.observe([match]) == []
     assert stabilizer.observe([match]) == [3]
+
+
+def test_crop_face_clamps_to_frame_and_rejects_empty_box() -> None:
+    from src.face_engine import crop_face
+
+    frame = np.zeros((20, 30, 3), dtype=np.uint8)
+
+    cropped = crop_face(frame, BoundingBox(-5, -5, 15, 15))
+    assert cropped.shape == (10, 10, 3)
+
+    with pytest.raises(ValueError, match="không hợp lệ"):
+        crop_face(frame, BoundingBox(50, 50, 10, 10))

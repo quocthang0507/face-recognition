@@ -336,3 +336,48 @@ def test_teacher_cannot_add_existing_student_by_code(client, school) -> None:
     )
 
     assert response.status_code == 403
+
+
+def test_unassigned_student_does_not_join_active_class_sessions(db: Session, school) -> None:
+    session_a = ClassroomService.start_session(db, class_id=school["class_a"].id)
+
+    unassigned = StudentService.register(db, "U1", "Chưa xếp lớp")
+
+    enrolled_ids = {
+        state.student_id for state in ClassroomService.attendance(db, session_a.id)
+    }
+    assert unassigned.id not in enrolled_ids
+
+
+def test_archived_class_rejects_new_sessions_and_students(db: Session, school) -> None:
+    ClassService.update(db, school["class_a"].id, is_archived=True)
+
+    with pytest.raises(DomainError, match="lưu trữ"):
+        ClassroomService.start_session(db, class_id=school["class_a"].id)
+    with pytest.raises(DomainError, match="lưu trữ"):
+        StudentService.register(
+            db, "A9", "Học sinh mới", class_ids=[school["class_a"].id]
+        )
+    with pytest.raises(DomainError, match="lưu trữ"):
+        ClassService.add_student(db, school["class_a"].id, school["student_b"].id)
+
+
+def test_cannot_archive_class_with_active_session(db: Session, school) -> None:
+    ClassroomService.start_session(db, class_id=school["class_a"].id)
+
+    with pytest.raises(DomainError, match="phiên học"):
+        ClassService.update(db, school["class_a"].id, is_archived=True)
+
+
+def test_mark_present_ignores_student_removed_from_class(db: Session, school) -> None:
+    session_a = ClassroomService.start_session(db, class_id=school["class_a"].id)
+
+    changed = ClassroomService.mark_present(
+        db, session_a.id, school["student_b"].id
+    )
+
+    assert changed is False
+    enrolled_ids = {
+        state.student_id for state in ClassroomService.attendance(db, session_a.id)
+    }
+    assert school["student_b"].id not in enrolled_ids

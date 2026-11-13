@@ -153,22 +153,41 @@ class TimedState:
 
     started_at: float | None = None
     last_alert_at: float = -math.inf
+    last_seen_at: float = -math.inf
 
 
 class BehaviorDetector(ABC):
     """Open extension point for one abnormal classroom behavior."""
 
     behavior_type: str
+    _stale_ttl_seconds: float = 120.0
 
     def __init__(self, duration_seconds: float, cooldown_seconds: float = 10.0) -> None:
         self.duration_seconds = duration_seconds
         self.cooldown_seconds = cooldown_seconds
         self.states: dict[str, TimedState] = defaultdict(TimedState)
+        self._last_pruned_at: float = -math.inf
+
+    def _prune_stale(self, now: float) -> None:
+        if now - self._last_pruned_at < 30.0:
+            return
+        self._last_pruned_at = now
+        cutoff = now - self._stale_ttl_seconds
+        stale = [
+            key for key, state in self.states.items() if state.last_seen_at < cutoff
+        ]
+        for key in stale:
+            self._drop_track(key)
+
+    def _drop_track(self, track_key: str) -> None:
+        self.states.pop(track_key, None)
 
     def evaluate(self, context: DetectorContext) -> bool:
         """Update temporal state and return true once per alert cooldown."""
 
+        self._prune_stale(context.now)
         state = self.states[context.track_key]
+        state.last_seen_at = context.now
         if not self.is_active(context):
             state.started_at = None
             return False
@@ -185,6 +204,7 @@ class BehaviorDetector(ABC):
         """Discard temporal state when this detector is disabled."""
 
         self.states.clear()
+        self._last_pruned_at = -math.inf
 
     @abstractmethod
     def is_active(self, context: DetectorContext) -> bool:
@@ -248,6 +268,11 @@ class TalkingDetector(BehaviorDetector):
             transitions.popleft()
         facing_peer = context.face_count > 1 and abs(context.yaw) > 12.0
         return facing_peer and len(transitions) >= 4
+
+    def _drop_track(self, track_key: str) -> None:
+        super()._drop_track(track_key)
+        self._transitions.pop(track_key, None)
+        self._last_open.pop(track_key, None)
 
     def reset(self) -> None:
         """Discard mouth-transition history when talking checks are disabled."""
@@ -370,6 +395,13 @@ class BehaviorEngine:
                 detector.reset()
         self._enabled_behaviors = enabled_behaviors
 
+    def reset(self) -> None:
+        """Clear all detector timers and cached results (e.g. on session change)."""
+
+        for detector in self.detectors:
+            detector.reset()
+        self._last_results = []
+
     def evaluate_detectors(self, context: DetectorContext) -> tuple[str, ...]:
         """Evaluate only checks selected by the current camera client."""
 
@@ -388,12 +420,17 @@ class BehaviorEngine:
         current_time = time.monotonic() if now is None else now
         if not self._behavior_rate.due(current_time):
             return [behavior.without_alerts() for behavior in self._last_results]
+        height, width = frame.shape[:2]
         try:
             import cv2
+
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         except ImportError:
-            return []
-        height, width = frame.shape[:2]
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb_frame = (
+                frame[:, :, ::-1]
+                if getattr(frame, "ndim", 0) == 3 and frame.shape[2] >= 3
+                else frame
+            )
         face_result = self._face_mesh.process(rgb_frame)
         if "HAND_ON_FACE" not in self._enabled_behaviors:
             self._last_hands = []

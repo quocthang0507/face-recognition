@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Generic, Iterable, TypeVar
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import cache
@@ -23,9 +24,10 @@ from .face_engine import (
     Gallery,
     closest_match,
 )
-from .models import ClassroomSession
+from .models import ClassroomSession, Student
 from .services import (
     BehaviorLogService,
+    CONSENT_GRANTED,
     ClassroomService,
     DomainError,
     StudentService,
@@ -263,6 +265,7 @@ class StreamProcessor:
             # otherwise students already counted would never reach the
             # threshold again and stay absent.
             self.attendance.reset()
+            self.behavior_engine.reset()
             self._session_id = current_session_id
         checked_in: list[dict[str, object]] = []
         if active_session and refreshed:
@@ -270,6 +273,15 @@ class StreamProcessor:
             try:
                 with timer.stage("attendance"):
                     for student_id in self.attendance.observe(matches):
+                        consented = db.scalar(
+                            select(Student.id).where(
+                                Student.id == student_id,
+                                Student.consent_status == CONSENT_GRANTED,
+                            )
+                        )
+                        if not consented:
+                            self._gallery.invalidate()
+                            continue
                         if ClassroomService.mark_present(
                             db, active_session.id, student_id
                         ):
@@ -312,6 +324,17 @@ class StreamProcessor:
     ) -> list[dict[str, object]]:
         alerts: list[dict[str, object]] = []
         snapshot_path: str | None = None
+        persist_session_id: int | None = None
+        if active_session is not None and any(behavior.alerts for behavior in behaviors):
+            status = db.scalar(
+                select(ClassroomSession.status).where(
+                    ClassroomSession.id == active_session.id
+                )
+            )
+            if status == "ACTIVE":
+                persist_session_id = active_session.id
+            elif hasattr(self, "_active_session"):
+                self._active_session.invalidate()
         for behavior in behaviors:
             identity = next(
                 (
@@ -331,13 +354,13 @@ class StreamProcessor:
                     "fullname": identity.fullname if identity else "Không rõ",
                     "snapshot_url": None,
                 }
-                if active_session is not None:
+                if persist_session_id is not None:
                     if snapshot_path is None:
                         # One evidence image per frame, shared by every alert.
                         snapshot_path = self.storage.save_snapshot(encode_jpeg(frame))
                     log = BehaviorLogService.create(
                         db,
-                        session_id=active_session.id,
+                        session_id=persist_session_id,
                         behavior_type=behavior_type,
                         snapshot_path=snapshot_path,
                         student_id=identity.student_id if identity else None,

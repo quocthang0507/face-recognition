@@ -116,16 +116,36 @@ class LoginThrottle:
         self,
         max_failures: int | None = None,
         lockout_seconds: int | None = None,
+        max_entries: int = 4096,
     ) -> None:
         self.max_failures = max_failures or settings.login_max_failures
         self.lockout_seconds = lockout_seconds or settings.login_lockout_seconds
-        self._failures: dict[str, tuple[int, float]] = {}
+        self.max_entries = max(1, max_entries)
+        self._failures: dict[str, tuple[int, float, float]] = {}
+
+    def _prune(self, current: float) -> None:
+        stale_cutoff = current - self.lockout_seconds
+        expired = [
+            key
+            for key, (count, locked_until, updated_at) in self._failures.items()
+            if (count >= self.max_failures and locked_until <= current)
+            or updated_at < stale_cutoff
+        ]
+        for key in expired:
+            self._failures.pop(key, None)
+        if len(self._failures) >= self.max_entries:
+            overflow = len(self._failures) - self.max_entries + 1
+            oldest = sorted(
+                self._failures.items(), key=lambda item: item[1][2]
+            )[:overflow]
+            for key, _ in oldest:
+                self._failures.pop(key, None)
 
     def retry_after(self, client: str, now: float | None = None) -> int:
         """Return remaining lockout seconds for a client, or zero."""
 
         current = time.time() if now is None else now
-        count, locked_until = self._failures.get(client, (0, 0.0))
+        count, locked_until, _ = self._failures.get(client, (0, 0.0, 0.0))
         if count >= self.max_failures and locked_until > current:
             return int(locked_until - current) + 1
         if count >= self.max_failures:
@@ -136,12 +156,16 @@ class LoginThrottle:
         """Count one failed login and start the lockout at the limit."""
 
         current = time.time() if now is None else now
-        count, _ = self._failures.get(client, (0, 0.0))
+        if len(self._failures) >= self.max_entries:
+            self._prune(current)
+        count, locked_until, _ = self._failures.get(client, (0, 0.0, current))
+        if count >= self.max_failures and locked_until <= current:
+            count = 0
         count += 1
-        locked_until = 0.0
-        if count >= self.max_failures:
-            locked_until = current + self.lockout_seconds
-        self._failures[client] = (count, locked_until)
+        next_locked_until = (
+            current + self.lockout_seconds if count >= self.max_failures else 0.0
+        )
+        self._failures[client] = (count, next_locked_until, current)
 
     def record_success(self, client: str) -> None:
         """Clear failures after a correct password."""

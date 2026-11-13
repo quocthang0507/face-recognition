@@ -420,9 +420,16 @@ class FaceRecognitionEngine:
 
 
 def crop_face(frame: Any, box: BoundingBox) -> Any:
-    """Crop a face rectangle from a BGR image."""
+    """Crop a face rectangle from a BGR image, clamped to frame bounds."""
 
-    return frame[box.y : box.y + box.height, box.x : box.x + box.width]
+    height, width = frame.shape[:2]
+    left = max(0, box.x)
+    top = max(0, box.y)
+    right = min(width, box.x + box.width)
+    bottom = min(height, box.y + box.height)
+    if right <= left or bottom <= top:
+        raise ValueError("Vùng khuôn mặt không hợp lệ")
+    return frame[top:bottom, left:right]
 
 
 def closest_match(box: BoundingBox, matches: Sequence[FaceMatch]) -> FaceMatch | None:

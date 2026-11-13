@@ -194,8 +194,12 @@ class UserService:
             user.password_hash = hash_password(password)
             user.token_version += 1
         if role is not None:
+            if role != user.role:
+                user.token_version += 1
             user.role = role
         if is_active is not None:
+            if is_active != user.is_active:
+                user.token_version += 1
             user.is_active = is_active
         db.commit()
         return user
@@ -228,15 +232,8 @@ class StudentService:
     """Manage registered students."""
 
     @staticmethod
-    def register(
-        db: Session,
-        student_code: str,
-        fullname: str,
-        embedding: Sequence[float] | None = None,
-        avatar_path: str | None = None,
-        class_ids: Sequence[int] = (),
-    ) -> Student:
-        """Register one student after validating unique identity fields."""
+    def validate_identity(student_code: str, fullname: str) -> tuple[str, str]:
+        """Normalize and validate student code and full name."""
 
         normalized_code = student_code.strip()
         normalized_name = " ".join(fullname.split())
@@ -244,29 +241,55 @@ class StudentService:
             raise DomainError("Mã học sinh phải có từ 1-20 ký tự")
         if not normalized_name or len(normalized_name) > 100:
             raise DomainError("Họ và tên phải có từ 1-100 ký tự")
+        return normalized_code, normalized_name
+
+    @staticmethod
+    def register(
+        db: Session,
+        student_code: str,
+        fullname: str,
+        embedding: Sequence[float] | None = None,
+        avatar_path: str | None = None,
+        class_ids: Sequence[int] = (),
+        consent_granted: bool = False,
+        consent_by_user_id: int | None = None,
+    ) -> Student:
+        """Register one student after validating unique identity fields."""
+
+        normalized_code, normalized_name = StudentService.validate_identity(
+            student_code, fullname
+        )
         existing = db.scalar(
             select(Student).where(Student.student_code == normalized_code)
         )
         if existing:
             raise DomainError("Mã học sinh đã tồn tại")
+        classes = [ClassService.get(db, class_id) for class_id in class_ids]
+        for school_class in classes:
+            if school_class.is_archived:
+                raise DomainError("Lớp học đã được lưu trữ")
         student = Student(
             student_code=normalized_code,
             fullname=normalized_name,
             embedding=serialize_embedding(embedding),
             embedding_model=settings.embedding_model_id if embedding else None,
             avatar_path=avatar_path,
+            consent_status=CONSENT_GRANTED if consent_granted else CONSENT_PENDING,
         )
         db.add(student)
         db.flush()
 
-        for class_id in class_ids:
-            student.classes.append(ClassService.get(db, class_id))
-        # Join the lessons running right now for this student's classes.
+        for school_class in classes:
+            student.classes.append(school_class)
+        # Join the lessons running right now for this student's classes
+        # (or classless legacy sessions when no classes are specified).
         active_query = select(ClassroomSession).where(
             ClassroomSession.status == "ACTIVE"
         )
         if class_ids:
             active_query = active_query.where(ClassroomSession.class_id.in_(class_ids))
+        else:
+            active_query = active_query.where(ClassroomSession.class_id.is_(None))
         for active_session in db.scalars(active_query):
             db.add(
                 SessionStudent(
@@ -274,6 +297,15 @@ class StudentService:
                     student_id=student.id,
                     is_present=False,
                     is_called=False,
+                )
+            )
+        if consent_granted:
+            db.add(
+                ConsentEvent(
+                    student_id=student.id,
+                    student_code=student.student_code,
+                    status=CONSENT_GRANTED,
+                    recorded_by=consent_by_user_id,
                 )
             )
         db.commit()
@@ -414,9 +446,10 @@ class ConsentService:
                 note=normalized_note,
             )
         )
+        snapshots = BehaviorLogService._delete_logs(db, storage, evidence, commit=False)
         db.commit()
         cache.bump("students")
-        BehaviorLogService._delete_logs(db, storage, evidence)
+        BehaviorLogService._unlink_unused_snapshots(db, storage, snapshots)
         if avatar:
             storage.delete_avatar(avatar)
         return student
@@ -535,6 +568,11 @@ class ClassService:
         if school_year is not None:
             school_class.school_year = school_year.strip() or None
         if is_archived is not None:
+            if is_archived and not school_class.is_archived:
+                if ClassroomService.get_active_session(db, class_id) is not None:
+                    raise DomainError(
+                        "Hãy kết thúc phiên học đang hoạt động trước khi lưu trữ lớp"
+                    )
             school_class.is_archived = is_archived
         db.commit()
         return school_class
@@ -599,6 +637,8 @@ class ClassService:
         """Add an existing student, joining the class's lesson if one is running."""
 
         school_class = ClassService.get(db, class_id)
+        if school_class.is_archived:
+            raise DomainError("Lớp học đã được lưu trữ")
         student = StudentService.get(db, student_id)
         if student not in school_class.students:
             school_class.students.append(student)
@@ -676,6 +716,10 @@ class ClassroomService:
         active = ClassroomService.get_active_session(db, class_id)
         if active is not None:
             raise DomainError("Có phiên học đang hoạt động")
+        if class_id is not None:
+            school_class = ClassService.get(db, class_id)
+            if school_class.is_archived:
+                raise DomainError("Lớp học đã được lưu trữ")
         normalized_title = " ".join((title or "").split()) or None
         if normalized_title and len(normalized_title) > 120:
             raise DomainError("Tên buổi học tối đa 120 ký tự")
@@ -762,7 +806,11 @@ class ClassroomService:
         teacher's manual decision is never overwritten by the camera.
         """
 
-        ClassroomService._active_by_id(db, session_id)
+        classroom_session = ClassroomService._active_by_id(db, session_id)
+        if classroom_session.class_id is not None and not ClassService.has_student(
+            db, classroom_session.class_id, student_id
+        ):
+            return False
         state = ClassroomService._state(db, session_id, student_id, create=True)
         if state.is_present or state.attendance_source == ATTENDANCE_MANUAL:
             return False
@@ -783,8 +831,12 @@ class ClassroomService:
     ) -> SessionStudent:
         """Let the teacher confirm or correct attendance manually."""
 
-        ClassroomService._active_by_id(db, session_id)
+        classroom_session = ClassroomService._active_by_id(db, session_id)
         StudentService.get(db, student_id)
+        if classroom_session.class_id is not None and not ClassService.has_student(
+            db, classroom_session.class_id, student_id
+        ):
+            raise NotFoundError("Học sinh không thuộc lớp này")
         state = ClassroomService._state(db, session_id, student_id, create=True)
         normalized_note = " ".join((note or "").split()) or None
         if normalized_note and len(normalized_note) > 200:
@@ -1001,16 +1053,30 @@ class BehaviorLogService:
 
     @staticmethod
     def _delete_logs(
-        db: Session, storage: PrivateStorage, logs: Sequence[BehaviorLog]
-    ) -> int:
-        """Delete selected behavior logs and any snapshots no longer referenced."""
+        db: Session,
+        storage: PrivateStorage,
+        logs: Sequence[BehaviorLog],
+        commit: bool = True,
+    ) -> int | list[str]:
+        """Delete selected behavior logs and optionally unlink unused snapshots."""
 
         if not logs:
-            return 0
+            return 0 if commit else []
         deleted_ids = [log.id for log in logs]
         snapshots = list(dict.fromkeys(log.snapshot_path for log in logs))
         db.execute(delete(BehaviorLog).where(BehaviorLog.id.in_(deleted_ids)))
+        if not commit:
+            return snapshots
         db.commit()
+        BehaviorLogService._unlink_unused_snapshots(db, storage, snapshots)
+        return len(logs)
+
+    @staticmethod
+    def _unlink_unused_snapshots(
+        db: Session, storage: PrivateStorage, snapshots: Sequence[str]
+    ) -> None:
+        if not snapshots:
+            return
         # Several alerts from one frame share a snapshot; keep files still in use.
         still_used = set(db.scalars(select(BehaviorLog.snapshot_path)))
         for snapshot in snapshots:
@@ -1020,4 +1086,3 @@ class BehaviorLogService:
                 storage.delete_snapshot(snapshot)
             except FileNotFoundError:
                 pass
-        return len(logs)

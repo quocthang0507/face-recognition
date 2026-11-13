@@ -50,3 +50,16 @@ def test_login_throttle_clears_after_success() -> None:
     throttle.record_failure("ip", now=1)
 
     assert throttle.retry_after("ip", now=1) == 0
+
+
+def test_login_throttle_caps_memory_and_prunes_expired_entries() -> None:
+    throttle = LoginThrottle(max_failures=2, lockout_seconds=10, max_entries=3)
+    throttle.record_failure("old-1", now=0)
+    throttle.record_failure("old-1", now=0)
+    throttle.record_failure("old-2", now=1)
+    throttle.record_failure("active-1", now=20)
+    throttle.record_failure("active-2", now=20)
+    throttle.record_failure("active-3", now=20)
+
+    assert len(throttle._failures) <= 3
+    assert "old-1" not in throttle._failures

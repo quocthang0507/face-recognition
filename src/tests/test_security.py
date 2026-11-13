@@ -145,3 +145,146 @@ def test_snapshots_saved_before_encryption_stay_readable(
     (tmp_path / "snapshots" / "cu.jpg").write_bytes(b"\xff\xd8cu")
 
     assert storage.read_snapshot("cu.jpg") == b"\xff\xd8cu"
+
+
+def test_login_requires_https_when_secure_transport_only_is_enabled(
+    client: TestClient, session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src import main
+    from src.config import Settings
+
+    with session_factory() as db:
+        UserService.create(db, "quan.tri", "mat-khau-goc", "QT", "ADMIN")
+    monkeypatch.setattr(main, "settings", Settings(secure_transport_only=True))
+
+    response = client.post(
+        "/api/auth/login",
+        json={"username": "quan.tri", "password": "mat-khau-goc"},
+    )
+
+    assert response.status_code == 400
+    assert response.cookies.get(COOKIE) is None
+
+
+def test_cross_origin_mutating_request_is_rejected(
+    signed_in: TestClient,
+) -> None:
+    response = signed_in.post(
+        "/api/classes",
+        json={"name": "Lớp CSRF"},
+        headers={"Origin": "https://evil.example"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_cross_site_fetch_metadata_on_mutation_is_rejected(
+    signed_in: TestClient,
+) -> None:
+    response = signed_in.post(
+        "/api/classes",
+        json={"name": "Lớp CSRF"},
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_role_change_revokes_existing_session_tokens(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    with session_factory() as db:
+        admin1 = UserService.create(db, "admin1", "mat-khau-goc", "A1", "ADMIN")
+        UserService.create(db, "admin2", "mat-khau-goc", "A2", "ADMIN")
+    client.post("/api/auth/login", json={"username": "admin1", "password": "mat-khau-goc"})
+    assert client.get("/api/auth/status").status_code == 200
+
+    with session_factory() as db:
+        UserService.update(db, admin1.id, role="TEACHER")
+
+    assert client.get("/api/auth/status").status_code == 401
+
+
+def test_shared_ip_lockout_only_blocks_targeted_username(
+    client: TestClient, session_factory: sessionmaker
+) -> None:
+    with session_factory() as db:
+        UserService.create(db, "gv.a", "mat-khau-gv-1", "GV A", "TEACHER")
+        UserService.create(db, "gv.b", "mat-khau-gv-2", "GV B", "TEACHER")
+
+    for _ in range(5):
+        client.post("/api/auth/login", json={"username": "gv.a", "password": "sai"})
+
+    blocked = client.post(
+        "/api/auth/login", json={"username": "gv.a", "password": "mat-khau-gv-1"}
+    )
+    other_user = client.post(
+        "/api/auth/login", json={"username": "gv.b", "password": "mat-khau-gv-2"}
+    )
+
+    assert blocked.status_code == 429
+    assert other_user.status_code == 200
+
+
+def test_get_avatar_uses_detected_image_media_type(
+    signed_in: TestClient, session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src import main
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    class FakeStorage:
+        def read_avatar(self, _name: str) -> bytes:
+            return png_bytes
+
+    monkeypatch.setattr(main, "storage", FakeStorage())
+    with session_factory() as db:
+        school_class = ClassService.create(db, "7A")
+        StudentService.register(
+            db, "S1", "An", [1.0, 0.0], "avatar-png.enc", class_ids=[school_class.id]
+        )
+
+    response = signed_in.get("/api/avatars/avatar-png.enc")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+
+
+def test_websocket_rejects_oversized_frame(
+    signed_in: TestClient, session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src import main
+
+    with session_factory() as db:
+        school_class = ClassService.create(db, "7A")
+        class_id = school_class.id
+    monkeypatch.setattr(main, "MAX_WS_FRAME_BYTES", 32)
+
+    with signed_in.websocket_connect(f"/ws?class_id={class_id}") as ws:
+        ws.send_bytes(b"\xff\xd8" + b"x" * 64)
+        message = ws.receive_json()
+
+    assert message["type"] == "error"
+    assert "kích thước" in message["message"].lower() or "dung lượng" in message["message"].lower()
+
+
+def test_websocket_revokes_active_stream_after_logout(
+    signed_in: TestClient, session_factory: sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from starlette.websockets import WebSocketDisconnect
+    from src import main
+
+    with session_factory() as db:
+        school_class = ClassService.create(db, "7A")
+        class_id = school_class.id
+    monkeypatch.setattr(main, "WS_REVERIFY_SECONDS", 0.0)
+
+    with signed_in.websocket_connect(f"/ws?class_id={class_id}") as ws:
+        with session_factory() as db:
+            user = UserService.authenticate(db, "quan.tri", "mat-khau-goc")
+            UserService.revoke_tokens(db, user)
+        ws.send_json({"type": "behavior_config", "enabled_behaviors": ["SLEEPING"]})
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            ws.receive_json()
+
+    assert exc_info.value.code == 1008

@@ -20,7 +20,28 @@ const state = {
   lastPayload: null,
   lastPayloadAt: 0,
   alertLabels: new Map(),
+  audioContext: null,
+  pickerTimer: null,
+  pickerToken: 0,
 };
+
+function getAudioContext() {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return null;
+  if (!state.audioContext) state.audioContext = new AudioCtx();
+  if (state.audioContext.state === "suspended") {
+    state.audioContext.resume().catch(() => {});
+  }
+  return state.audioContext;
+}
+
+function cancelPickerAnimation() {
+  state.pickerToken += 1;
+  if (state.pickerTimer !== null) {
+    clearTimeout(state.pickerTimer);
+    state.pickerTimer = null;
+  }
+}
 
 const $ = (selector) => document.querySelector(selector);
 const camera = $("#camera");
@@ -161,6 +182,8 @@ async function refreshAdmin() {
 
 async function createClass(event) {
   event.preventDefault();
+  const submitButton = event.target.querySelector('button[type="submit"]');
+  if (submitButton) submitButton.disabled = true;
   try {
     await api("/api/classes", {
       method: "POST",
@@ -173,7 +196,11 @@ async function createClass(event) {
     event.target.reset();
     await refreshAdmin();
     toast("Đã thêm lớp");
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
 }
 
 async function onClassTeacherChange(event) {
@@ -207,6 +234,8 @@ async function onAddStudentToClass(event) {
 
 async function createUser(event) {
   event.preventDefault();
+  const submitButton = event.target.querySelector('button[type="submit"]');
+  if (submitButton) submitButton.disabled = true;
   try {
     await api("/api/users", {
       method: "POST",
@@ -221,7 +250,11 @@ async function createUser(event) {
     event.target.reset();
     await refreshAdmin();
     toast("Đã thêm tài khoản");
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
 }
 
 async function updateUser(userId, changes) {
@@ -258,8 +291,8 @@ async function refreshVideoDevices() {
     const currentSelected = select.value;
     
     select.innerHTML = state.videoDevices.map((device, index) => `
-      <option value="${device.deviceId}" ${device.deviceId === currentSelected ? "selected" : ""}>
-        ${device.label || `Camera ${index + 1}`}
+      <option value="${escapeHtml(device.deviceId)}" ${device.deviceId === currentSelected ? "selected" : ""}>
+        ${escapeHtml(device.label || `Camera ${index + 1}`)}
       </option>
     `).join("") || '<option value="">Không tìm thấy camera</option>';
   } catch (error) {
@@ -347,9 +380,9 @@ function connectSocket() {
     restartCameraTimer();
   };
   state.socket.onmessage = ({ data }) => {
-    state.waitingFrame = false;
     const payload = JSON.parse(data);
     if (payload.type === "error") {
+      state.waitingFrame = false;
       toast(payload.message, true);
       return;
     }
@@ -358,6 +391,7 @@ function connectSocket() {
       renderBehaviorOptions();
       return;
     }
+    state.waitingFrame = false;
     recordRoundTrip();
     if (payload.image) {
       frame.src = `data:image/jpeg;base64,${payload.image}`;
@@ -587,11 +621,13 @@ async function refreshClasses() {
 }
 
 async function onClassChange(event) {
+  cancelPickerAnimation();
   state.classId = Number(event.target.value);
   localStorage.setItem(CLASS_STORAGE_KEY, String(state.classId));
   const streaming = Boolean(state.stream);
   if (streaming) stopCamera();
   state.session = null;
+  state.alerts = [];
   await Promise.all([refreshSession(), refreshAlerts()]);
   if (streaming) await startCamera();
 }
@@ -667,7 +703,7 @@ function renderSession() {
     ? `${present} / ${state.students.length} (${summary.late} muộn)`
     : `${present} / ${state.students.length}`;
   $("#called-stat").textContent = String(called);
-  if (summary) $("#alert-stat").textContent = String(summary.behaviors);
+  $("#alert-stat").textContent = String(summary ? summary.behaviors : state.alerts.length);
   $("#session-meta").textContent = active
     ? `Bắt đầu lúc ${formatTime(state.session.created_at)} · tính muộn sau ${state.session.late_after_minutes} phút`
     : "";
@@ -849,6 +885,10 @@ async function showSessionReport(sessionId) {
 }
 
 async function showHistory() {
+  if (!state.classId) {
+    toast("Vui lòng chọn lớp học trước", true);
+    return;
+  }
   try {
     const sessions = await api(`/api/sessions?limit=30&class_id=${state.classId}`);
     $("#report-title").textContent = "Các phiên học gần đây";
@@ -880,6 +920,7 @@ function onReportClick(event) {
 }
 
 async function createSession() {
+  if (!state.classId) throw new Error("Vui lòng chọn lớp học trước");
   const title = $("#session-title-input").value.trim();
   state.session = await api("/api/sessions", {
     method: "POST",
@@ -892,15 +933,24 @@ async function createSession() {
 }
 
 async function startSession() {
+  const button = $("#start-session-button");
+  if (button.disabled) return;
+  button.disabled = true;
   try {
     await createSession();
     toast("Đã bắt đầu phiên học");
     if (!state.stream) toast("Bật camera để hệ thống tự động điểm danh");
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = Boolean(state.session);
+  }
 }
 
 async function finishSession() {
   if (!state.session) return;
+  const button = $("#finish-session-button");
+  if (button.disabled) return;
   const unrecorded = state.students.filter(
     (student) => !student.is_present && student.attendance_source !== "MANUAL",
   ).length;
@@ -908,6 +958,7 @@ async function finishSession() {
     ? `Kết thúc phiên? Còn ${unrecorded} học sinh chưa được điểm danh và sẽ được ghi nhận là vắng.`
     : "Kết thúc phiên học?";
   if (!window.confirm(message)) return;
+  button.disabled = true;
   try {
     const finished = await api(`/api/sessions/${state.session.id}/finish`, { method: "POST" });
     state.session = null;
@@ -915,10 +966,20 @@ async function finishSession() {
     await refreshSession();
     toast("Đã kết thúc phiên học");
     showSessionReport(finished.id);
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = !state.session;
+  }
 }
 
 async function pickStudent() {
+  if (!state.classId) {
+    toast("Vui lòng chọn lớp học trước", true);
+    return;
+  }
+  cancelPickerAnimation();
+  const token = state.pickerToken;
   let sessionId = state.session ? state.session.id : null;
   if (!sessionId) {
     try {
@@ -950,12 +1011,14 @@ async function pickStudent() {
 
   try {
     const student = await api(`/api/sessions/${sessionId}/pick`, { method: "POST" });
+    if (token !== state.pickerToken || !$("#picker-modal").classList.contains("visible")) return;
     const allNames = state.students.map((item) => item.fullname);
 
     // Audio synthesizer for visual effects
     const playTick = (freq) => {
       try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = getAudioContext();
+        if (!ctx) return;
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.connect(gain);
@@ -970,7 +1033,8 @@ async function pickStudent() {
 
     const playTada = () => {
       try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = getAudioContext();
+        if (!ctx) return;
         const now = ctx.currentTime;
         const playNote = (freq, start, duration) => {
           const osc = ctx.createOscillator();
@@ -995,6 +1059,7 @@ async function pickStudent() {
     let delay = 40;
 
     const animate = () => {
+      if (token !== state.pickerToken || !$("#picker-modal").classList.contains("visible")) return;
       if (allNames.length > 0) {
         const randomName = allNames[Math.floor(Math.random() * allNames.length)];
         nameEl.textContent = randomName;
@@ -1011,8 +1076,9 @@ async function pickStudent() {
 
       if (delay < 350) {
         delay += tick * 1.5;
-        setTimeout(animate, delay);
+        state.pickerTimer = setTimeout(animate, delay);
       } else {
+        state.pickerTimer = null;
         showPickedStudent(student);
         if (avatarRing) {
           avatarRing.style.borderColor = "var(--green)";
@@ -1023,11 +1089,15 @@ async function pickStudent() {
       }
     };
 
-    setTimeout(animate, 200);
+    state.pickerTimer = setTimeout(animate, 200);
 
   } catch (error) {
+    cancelPickerAnimation();
     $("#picker-modal").classList.remove("visible");
-    toast(`${error.message}. Có thể reset lượt gọi để bắt đầu vòng mới.`, true);
+    const suffix = error.message.includes("đã được gọi")
+      ? ". Có thể reset lượt gọi để bắt đầu vòng mới."
+      : "";
+    toast(`${error.message}${suffix}`, true);
   }
 }
 
@@ -1062,9 +1132,15 @@ async function resetCalled() {
 
 async function registerStudent(event) {
   event.preventDefault();
+  if (!state.classId) {
+    toast("Vui lòng chọn lớp học trước", true);
+    return;
+  }
+  const submitButton = event.target.querySelector('button[type="submit"]');
+  if (submitButton && submitButton.disabled) return;
   const data = new FormData(event.target);
   data.set("class_id", state.classId);
-  
+
   if (!data.has("consent")) {
     data.delete("image");
     if (!window.confirm("Chưa có đồng ý của phụ huynh nên hệ thống sẽ không lưu ảnh khuôn mặt. Vẫn đăng ký?")) return;
@@ -1077,14 +1153,19 @@ async function registerStudent(event) {
       if (!window.confirm("Chưa có ảnh khuôn mặt: học sinh sẽ không được camera tự điểm danh cho đến khi cập nhật ảnh. Vẫn đăng ký?")) return;
     }
   }
-  
+
+  if (submitButton) submitButton.disabled = true;
   try {
     await api("/api/students/register", { method: "POST", body: data });
     event.target.reset();
     $("#register-form").classList.add("hidden");
     await refreshSession();
     toast("Đã đăng ký học sinh");
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
 }
 
 async function refreshAlerts() {
@@ -1110,7 +1191,8 @@ function playWarningSound() {
   const checkbox = $("#audio-alert-checkbox-modal");
   if (!checkbox || !checkbox.checked) return;
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = getAudioContext();
+    if (!ctx) return;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -1157,8 +1239,8 @@ function populateVoices() {
   const listToUse = viVoices.length > 0 ? viVoices : voices;
   
   select.innerHTML = listToUse.map(voice => `
-    <option value="${voice.name}" ${voice.name === currentSelected ? "selected" : ""}>
-      ${voice.name} (${voice.lang})
+    <option value="${escapeHtml(voice.name)}" ${voice.name === currentSelected ? "selected" : ""}>
+      ${escapeHtml(voice.name)} (${escapeHtml(voice.lang)})
     </option>
   `).join("") || '<option value="">Không tìm thấy giọng đọc</option>';
   renderSpeechStatus();
@@ -1413,7 +1495,7 @@ function renderAlerts() {
 }
 
 async function clearAlerts() {
-  if (!state.alerts.length) return;
+  if (!state.classId || !state.alerts.length) return;
   if (!window.confirm("Xóa nhật ký cảnh báo và ảnh bằng chứng của lớp này?")) return;
   try {
     const result = await api(`/api/behaviors?class_id=${state.classId}`, { method: "DELETE" });
@@ -1452,7 +1534,10 @@ $("#finish-session-button").addEventListener("click", finishSession);
 $("#pick-button").addEventListener("click", pickStudent);
 $("#reset-called-button").addEventListener("click", resetCalled);
 $("#clear-alerts-button").addEventListener("click", clearAlerts);
-$("#close-picker-button").addEventListener("click", () => $("#picker-modal").classList.remove("visible"));
+$("#close-picker-button").addEventListener("click", () => {
+  cancelPickerAnimation();
+  $("#picker-modal").classList.remove("visible");
+});
 $("#toggle-register-button").addEventListener("click", (event) => {
   const hidden = $("#register-form").classList.toggle("hidden");
   event.currentTarget.setAttribute("aria-expanded", String(!hidden));
@@ -1484,6 +1569,7 @@ const setupOutsideClickClose = (modalSelector) => {
   if (modal) {
     modal.addEventListener("click", (e) => {
       if (e.target === modal) {
+        if (modalSelector === "#picker-modal") cancelPickerAnimation();
         modal.classList.remove("visible");
       }
     });
@@ -1495,6 +1581,7 @@ setupOutsideClickClose("#report-modal");
 setupOutsideClickClose("#admin-modal");
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  cancelPickerAnimation();
   for (const selector of ["#settings-modal", "#picker-modal", "#report-modal", "#admin-modal"]) {
     $(selector).classList.remove("visible");
   }
@@ -1506,8 +1593,11 @@ document.addEventListener("visibilitychange", () => {
 });
 $("#logout-button").addEventListener("click", async () => {
   stopCamera();
-  await api("/api/auth/logout", { method: "POST" });
-  location.reload();
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } finally {
+    location.reload();
+  }
 });
 
 loadCurrentUser()

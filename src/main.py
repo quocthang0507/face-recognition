@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -26,7 +27,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -81,11 +82,15 @@ from .tts import SpeechUnavailable, VietnameseSpeech
 logger = logging.getLogger("smart_classroom")
 storage = PrivateStorage()
 login_throttle = LoginThrottle()
+account_throttle = LoginThrottle(max_failures=settings.login_max_failures * 3)
 speech = VietnameseSpeech()
 _shared_engine: FaceRecognitionEngine | None = None
 _shared_engine_lock = threading.Lock()
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_WS_FRAME_BYTES = 8 * 1024 * 1024
+WS_REVERIFY_SECONDS = 15.0
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 CONTENT_SECURITY_POLICY = "; ".join(
     [
         "default-src 'self'",
@@ -272,17 +277,38 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.allowed_origins),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
+def _is_trusted_origin(request: Request, origin: str) -> bool:
+    if origin in settings.allowed_origins:
+        return True
+    host = request.headers.get("host")
+    if not host:
+        return False
+    return origin == f"{request.url.scheme}://{host}"
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next) -> Response:
-    """Attach browser protections to every HTTP response."""
+    """Reject cross-site mutations and attach browser protections."""
 
-    response = await call_next(request)
+    if request.method in UNSAFE_METHODS:
+        origin = request.headers.get("origin")
+        fetch_site = request.headers.get("sec-fetch-site")
+        if fetch_site == "cross-site" or (
+            origin and not _is_trusted_origin(request, origin)
+        ):
+            response: Response = JSONResponse(
+                {"detail": "Nguồn yêu cầu không được cho phép"}, status_code=403
+            )
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
     response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -420,8 +446,15 @@ def login(
 ) -> dict[str, str]:
     """Authenticate an account and set an HttpOnly cookie."""
 
+    _require_secure_request(request)
     client = request.client.host if request.client else "unknown"
-    retry_after = login_throttle.retry_after(client)
+    username_key = payload.username.strip().lower()
+    pair_key = f"{client}:{username_key}"
+    user_key = f"user:{username_key}"
+    retry_after = max(
+        login_throttle.retry_after(pair_key),
+        account_throttle.retry_after(user_key) if username_key else 0,
+    )
     if retry_after:
         raise HTTPException(
             status_code=429,
@@ -430,11 +463,15 @@ def login(
         )
     user = UserService.authenticate(db, payload.username, payload.password)
     if user is None:
-        login_throttle.record_failure(client)
+        login_throttle.record_failure(pair_key)
+        if username_key:
+            account_throttle.record_failure(user_key)
         raise HTTPException(
             status_code=401, detail="Tên đăng nhập hoặc mật khẩu không chính xác"
         )
-    login_throttle.record_success(client)
+    login_throttle.record_success(pair_key)
+    if username_key:
+        account_throttle.record_success(user_key)
     response.set_cookie(
         key=settings.cookie_name,
         value=issue_user_token(user.id, user.token_version),
@@ -460,7 +497,12 @@ def logout(
         user = None
     if user is not None:
         UserService.revoke_tokens(db, user)
-    response.delete_cookie(settings.cookie_name)
+    response.delete_cookie(
+        settings.cookie_name,
+        httponly=True,
+        secure=settings.secure_cookie,
+        samesite="strict",
+    )
     return {"status": "logged_out"}
 
 
@@ -644,6 +686,16 @@ def list_students(
     return [_student_payload(student) for student in StudentService.list_all(db, scope)]
 
 
+def _detect_image_type(content: bytes) -> str | None:
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 async def _read_face_image(
     image: UploadFile,
     db: Session,
@@ -660,6 +712,10 @@ async def _read_face_image(
     if not content or len(content) > MAX_IMAGE_BYTES:
         raise HTTPException(
             status_code=413, detail="Dung lượng ảnh phải nằm trong khoảng từ 1B đến 5MB"
+        )
+    if _detect_image_type(content) not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=415, detail="Tệp tải lên không phải ảnh JPEG, PNG hoặc WebP hợp lệ"
         )
     try:
         frame = await asyncio.to_thread(decode_jpeg, content)
@@ -699,10 +755,16 @@ async def register_student(
     """Register a student into a class from a webcam JPEG or uploaded image."""
 
     scope = _scope_class(db, user, class_id)
+    if scope is not None and ClassService.get(db, scope).is_archived:
+        raise HTTPException(status_code=409, detail="Lớp học đã được lưu trữ")
     has_image = image is not None and bool(image.filename)
     if has_image and not consent:
         raise HTTPException(status_code=409, detail=CONSENT_REQUIRED)
-    if db.scalar(select(Student).where(Student.student_code == student_code.strip())):
+    try:
+        normalized_code, _ = StudentService.validate_identity(student_code, fullname)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    if db.scalar(select(Student).where(Student.student_code == normalized_code)):
         raise HTTPException(status_code=409, detail="Mã học sinh đã tồn tại")
 
     embedding = None
@@ -719,15 +781,13 @@ async def register_student(
             embedding,
             avatar_path,
             class_ids=[scope] if scope is not None else [],
+            consent_granted=consent,
+            consent_by_user_id=user.id,
         )
     except DomainError as exc:
         if avatar_path:
             storage.delete_avatar(avatar_path)
         raise _domain_error(exc) from exc
-    if consent:
-        student = ConsentService.record(
-            db, student.id, CONSENT_GRANTED, user.id, storage
-        )
     return _student_payload(student)
 
 
@@ -809,7 +869,9 @@ def get_avatar(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh đại diện") from exc
     AccessLogService.record(db, user.id, "VIEW_AVATAR", name)
-    return Response(content, media_type="image/jpeg")
+    return Response(
+        content, media_type=_detect_image_type(content) or "image/jpeg"
+    )
 
 
 @app.post("/api/sessions")
@@ -1047,7 +1109,7 @@ def get_snapshot(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh chụp bằng chứng") from exc
     AccessLogService.record(db, user.id, "VIEW_SNAPSHOT", name)
-    return Response(content, media_type="image/jpeg")
+    return Response(content, media_type=_detect_image_type(content) or "image/jpeg")
 
 
 @app.get("/api/access-logs", dependencies=[Depends(require_admin)])
@@ -1072,7 +1134,7 @@ async def video_stream(websocket: WebSocket) -> None:
     """Receive webcam JPEG frames and return annotated frame metadata."""
 
     try:
-        class_id = _verify_websocket(websocket)
+        class_id, claims = _verify_websocket(websocket)
     except AuthenticationError:
         await websocket.close(code=1008)
         return
@@ -1080,36 +1142,83 @@ async def video_stream(websocket: WebSocket) -> None:
     # ``?overlay=server`` keeps the old annotated-JPEG mode for debugging.
     server_overlay = websocket.query_params.get("overlay") == "server"
     processor = StreamProcessor(storage, class_id=class_id)
+    last_verified_at = asyncio.get_running_loop().time()
     try:
         while True:
             message = await websocket.receive()
             if message.get("type") == "websocket.disconnect":
                 raise WebSocketDisconnect(code=message.get("code", 1000))
-            behavior_config = _websocket_behavior_config(message)
-            if behavior_config is not None:
-                processor.set_enabled_behaviors(behavior_config)
+            now = asyncio.get_running_loop().time()
+            if now - last_verified_at >= WS_REVERIFY_SECONDS:
+                try:
+                    with SessionLocal() as db:
+                        _verify_ws_access(db, claims, class_id)
+                except AuthenticationError:
+                    await websocket.close(code=1008)
+                    return
+                last_verified_at = now
+            raw_bytes = message.get("bytes")
+            raw_text = message.get("text")
+            if raw_bytes is not None and len(raw_bytes) > MAX_WS_FRAME_BYTES:
                 await websocket.send_json(
-                    {
-                        "type": "behavior_config",
-                        "enabled_behaviors": sorted(processor.enabled_behaviors),
-                    }
+                    {"type": "error", "message": "Khung hình vượt quá kích thước cho phép"}
                 )
+                await websocket.close(code=1009)
+                return
+            if raw_text is not None and len(raw_text.encode("utf-8")) > MAX_WS_FRAME_BYTES:
+                await websocket.send_json(
+                    {"type": "error", "message": "Dữ liệu khung hình vượt quá kích thước cho phép"}
+                )
+                await websocket.close(code=1009)
+                return
+            try:
+                behavior_config = _websocket_behavior_config(message)
+                if behavior_config is not None:
+                    processor.set_enabled_behaviors(behavior_config)
+                    await websocket.send_json(
+                        {
+                            "type": "behavior_config",
+                            "enabled_behaviors": sorted(processor.enabled_behaviors),
+                        }
+                    )
+                    continue
+                raw_jpeg = _websocket_frame_bytes(message)
+            except ValueError as exc:
+                await websocket.send_json({"type": "error", "message": str(exc)})
                 continue
-            raw_jpeg = _websocket_frame_bytes(message)
-            with SessionLocal() as db:
-                result = await asyncio.to_thread(
-                    processor.process, raw_jpeg, db, server_overlay
-                )
+            try:
+                with SessionLocal() as db:
+                    result = await asyncio.to_thread(
+                        processor.process, raw_jpeg, db, server_overlay
+                    )
+            except ValueError as exc:
+                await websocket.send_json({"type": "error", "message": str(exc)})
+                continue
             await websocket.send_json(result.to_dict())
     except WebSocketDisconnect:
         return
-    except (RuntimeError, ValueError) as exc:
+    except RuntimeError as exc:
         await websocket.send_json({"type": "error", "message": str(exc)})
         await websocket.close(code=1011)
 
 
-def _verify_websocket(websocket: WebSocket) -> int:
-    """Check the connection and return the class this camera stream serves."""
+def _verify_ws_access(db: Session, claims: TokenClaims, class_id: int) -> None:
+    """Re-validate an authenticated WebSocket's user token version and class access."""
+
+    user = _active_user(db, claims)
+    if user is None:
+        raise AuthenticationError("Tài khoản không còn hiệu lực")
+    school_class = db.get(SchoolClass, class_id)
+    if (
+        school_class is None
+        or school_class.is_archived
+        or not _can_access_class(db, user, class_id)
+    ):
+        raise AuthenticationError("Bạn không phụ trách lớp này")
+
+
+def _verify_websocket(websocket: WebSocket) -> tuple[int, TokenClaims]:
+    """Check the connection and return the class and verified claims."""
 
     origin = websocket.headers.get("origin")
     if origin and origin not in settings.allowed_origins:
@@ -1124,14 +1233,8 @@ def _verify_websocket(websocket: WebSocket) -> int:
     except ValueError as exc:
         raise AuthenticationError("Thiếu lớp cho luồng camera") from exc
     with SessionLocal() as db:
-        user = _active_user(db, claims)
-        if user is None:
-            raise AuthenticationError("Tài khoản không còn hiệu lực")
-        if db.get(SchoolClass, class_id) is None or not _can_access_class(
-            db, user, class_id
-        ):
-            raise AuthenticationError("Bạn không phụ trách lớp này")
-    return class_id
+        _verify_ws_access(db, claims, class_id)
+    return class_id, claims
 
 
 def _websocket_frame_bytes(message: dict[str, object]) -> bytes:

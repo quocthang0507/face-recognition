@@ -12,9 +12,12 @@ def seed_students(page, *students: tuple[str, str]) -> None:
 
     class_id = page.evaluate("state.classId")
     for code, name in students:
+        payload = {"student_code": code, "fullname": name}
+        if class_id is not None:
+            payload["class_id"] = str(class_id)
         response = page.request.post(
             "/api/students/register",
-            multipart={"student_code": code, "fullname": name, "class_id": class_id},
+            multipart=payload,
         )
         assert response.ok, response.text()
     reload_dashboard(page)

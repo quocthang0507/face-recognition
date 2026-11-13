@@ -37,7 +37,13 @@ def client(session_factory: sessionmaker) -> Iterator[TestClient]:
         with session_factory() as session:
             yield session
 
+    original_session_local = main.SessionLocal
+    main.SessionLocal = session_factory
     main.app.dependency_overrides[get_db] = override
     main.login_throttle._failures.clear()
-    yield TestClient(main.app)
-    main.app.dependency_overrides.clear()
+    main.account_throttle._failures.clear()
+    try:
+        yield TestClient(main.app)
+    finally:
+        main.SessionLocal = original_session_local
+        main.app.dependency_overrides.clear()

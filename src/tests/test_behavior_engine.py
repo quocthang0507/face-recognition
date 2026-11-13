@@ -101,3 +101,27 @@ def test_disabled_behavior_is_not_evaluated() -> None:
 
     assert alerts == ()
     assert not detector.states
+
+
+def test_behavior_detector_prunes_stale_track_states() -> None:
+    detector = SleepingDetector()
+
+    detector.evaluate(context(track_key="face-old", ear=0.1, pitch=15, now=0.0))
+    detector.evaluate(context(track_key="face-new", ear=0.1, pitch=15, now=200.0))
+
+    assert "face-old" not in detector.states
+    assert "face-new" in detector.states
+
+
+def test_behavior_engine_reset_clears_detector_states() -> None:
+    detector = SleepingDetector()
+    engine = BehaviorEngine.__new__(BehaviorEngine)
+    engine.detectors = [detector]
+    engine._enabled_behaviors = frozenset({"SLEEPING"})
+    engine._last_results = ["stale"]
+
+    detector.evaluate(context(ear=0.1, pitch=15, now=0.0))
+    engine.reset()
+
+    assert not detector.states
+    assert engine._last_results == []
