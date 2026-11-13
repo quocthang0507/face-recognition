@@ -134,11 +134,19 @@ class UpdateUserRequest(BaseModel):
     password: str | None = None
 
 
+class ChangePasswordRequest(BaseModel):
+    """Self-service password rotation for a signed-in user."""
+
+    current_password: str
+    new_password: str
+
+
 class StartSessionRequest(BaseModel):
     """Optional lesson metadata entered by the teacher."""
 
     class_id: int
     title: str | None = Field(default=None, max_length=120)
+    late_after_minutes: int | None = Field(default=None, ge=0, le=180)
 
 
 class NewClassRequest(BaseModel):
@@ -437,6 +445,17 @@ def favicon() -> FileResponse:
     return FileResponse(BASE_DIR / "static" / "favicon.png")
 
 
+def _set_auth_cookie(response: Response, user: User) -> None:
+    response.set_cookie(
+        key=settings.cookie_name,
+        value=issue_user_token(user.id, user.token_version),
+        httponly=True,
+        secure=settings.secure_cookie,
+        samesite="strict",
+        max_age=settings.token_ttl_seconds,
+    )
+
+
 @app.post("/api/auth/login")
 def login(
     payload: LoginRequest,
@@ -472,15 +491,27 @@ def login(
     login_throttle.record_success(pair_key)
     if username_key:
         account_throttle.record_success(user_key)
-    response.set_cookie(
-        key=settings.cookie_name,
-        value=issue_user_token(user.id, user.token_version),
-        httponly=True,
-        secure=settings.secure_cookie,
-        samesite="strict",
-        max_age=settings.token_ttl_seconds,
-    )
+    _set_auth_cookie(response, user)
     return {"status": "authenticated"}
+
+
+@app.post("/api/auth/change-password")
+def change_own_password(
+    payload: ChangePasswordRequest,
+    user: CurrentUser,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    """Rotate the current account's password and refresh its active cookie."""
+
+    try:
+        updated = UserService.change_password(
+            db, user.id, payload.current_password, payload.new_password
+        )
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    _set_auth_cookie(response, updated)
+    return {"status": "password_changed"}
 
 
 @app.post("/api/auth/logout")
@@ -584,16 +615,33 @@ def read_aloud(payload: SpeechRequest) -> Response:
 
 @app.get("/api/classes")
 def list_classes(
-    user: CurrentUser, db: Annotated[Session, Depends(get_db)]
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    include_archived: bool = False,
 ) -> list[dict[str, object]]:
     """Return the classes the signed-in account can open."""
 
     classes = (
-        ClassService.list_all(db)
+        ClassService.list_all(db, include_archived=include_archived)
         if user.role == ROLE_ADMIN
         else ClassService.list_for_teacher(db, user.id)
     )
     return [_class_payload(school_class) for school_class in classes]
+
+
+@app.get("/api/classes/{class_id}/report")
+def class_attendance_report(
+    class_id: int,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    """Return aggregated attendance statistics for one class."""
+
+    _require_class_access(db, user, class_id)
+    try:
+        return ClassService.attendance_report(db, class_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
 
 
 @app.post("/api/classes", dependencies=[Depends(require_admin)])
@@ -810,6 +858,21 @@ def record_consent(
     return _student_payload(student)
 
 
+@app.get("/api/students/{student_id}/consent-events")
+def student_consent_events(
+    student_id: int,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+) -> list[dict[str, object]]:
+    """Return the immutable consent history of one student."""
+
+    _require_student_access(db, user, student_id)
+    try:
+        return ConsentService.history(db, student_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+
+
 @app.post("/api/students/{student_id}/face")
 async def update_student_face(
     student_id: int,
@@ -885,7 +948,11 @@ def start_session(
     _require_class_access(db, user, payload.class_id)
     try:
         classroom_session = ClassroomService.start_session(
-            db, payload.title, class_id=payload.class_id, teacher_id=user.id
+            db,
+            payload.title,
+            class_id=payload.class_id,
+            teacher_id=user.id,
+            late_after_minutes=payload.late_after_minutes,
         )
     except DomainError as exc:
         raise _domain_error(exc) from exc
@@ -1092,6 +1159,26 @@ def clear_behaviors(
 
     scope = _scope_class(db, user, class_id)
     return {"deleted": BehaviorLogService.clear_all(db, storage, scope)}
+
+
+@app.delete("/api/behaviors/{log_id}")
+def delete_behavior(
+    log_id: int,
+    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    """Dismiss one false-positive behavior alert and delete its unshared snapshot."""
+
+    try:
+        log = BehaviorLogService.get(db, log_id)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    _require_session_access(db, user, log.session_id)
+    try:
+        BehaviorLogService.delete_one(db, log_id, storage)
+    except DomainError as exc:
+        raise _domain_error(exc) from exc
+    return {"status": "deleted"}
 
 
 @app.get("/api/snapshots/{name}")
@@ -1319,7 +1406,11 @@ def _session_header(classroom_session: ClassroomSession) -> dict[str, object]:
         "status": classroom_session.status,
         "created_at": iso_utc(classroom_session.created_at),
         "finished_at": iso_utc(classroom_session.finished_at),
-        "late_after_minutes": settings.late_after_minutes,
+        "late_after_minutes": (
+            settings.late_after_minutes
+            if classroom_session.late_after_minutes is None
+            else classroom_session.late_after_minutes
+        ),
     }
 
 

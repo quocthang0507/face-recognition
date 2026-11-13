@@ -23,6 +23,8 @@ const state = {
   audioContext: null,
   pickerTimer: null,
   pickerToken: 0,
+  searchQuery: "",
+  studentFilter: "ALL",
 };
 
 function getAudioContext() {
@@ -129,7 +131,12 @@ async function refreshUsers() {
     <tr>
       <td>${escapeHtml(user.username)}</td>
       <td>${escapeHtml(user.fullname)}</td>
-      <td>${ROLE_TEXT[user.role] || escapeHtml(user.role)}</td>
+      <td>
+        <select class="select-field admin-user-role" data-user-role="${user.id}" aria-label="Vai trò của ${escapeHtml(user.fullname)}">
+          <option value="TEACHER" ${user.role === "TEACHER" ? "selected" : ""}>Giáo viên</option>
+          <option value="ADMIN" ${user.role === "ADMIN" ? "selected" : ""}>Quản trị</option>
+        </select>
+      </td>
       <td><span class="badge ${user.is_active ? "present" : "warn"}">${user.is_active ? "Hoạt động" : "Đã khóa"}</span></td>
       <td><div class="row-actions">
         <button type="button" class="button ghost" data-user-password="${user.id}">Đặt lại mật khẩu</button>
@@ -149,7 +156,10 @@ async function openAdmin() {
 async function refreshAdmin() {
   await refreshUsers();
   await refreshClasses();
-  const entries = await api("/api/access-logs");
+  const [entries, allClasses] = await Promise.all([
+    api("/api/access-logs"),
+    api("/api/classes?include_archived=true"),
+  ]);
   $("#admin-access-list").innerHTML = entries.map((entry) => `
     <tr>
       <td>${formatDateTime(entry.created_at)}</td>
@@ -158,11 +168,15 @@ async function refreshAdmin() {
     </tr>
   `).join("") || '<tr><td colspan="3" class="empty-row">Chưa có lượt xem ảnh nào.</td></tr>';
   const teachers = state.users.filter((user) => user.role === "TEACHER" && user.is_active);
-  $("#admin-class-list").innerHTML = state.classes.map((item) => `
+  $("#admin-class-list").innerHTML = allClasses.map((item) => `
     <article class="admin-class" data-class-row="${item.id}">
       <header>
-        <span>${escapeHtml(item.name)}${item.school_year ? ` · ${escapeHtml(item.school_year)}` : ""}</span>
-        <span>${item.student_count} học sinh</span>
+        <span>${escapeHtml(item.name)}${item.school_year ? ` · ${escapeHtml(item.school_year)}` : ""}${item.is_archived ? ' <span class="badge warn">Đã lưu trữ</span>' : ""}</span>
+        <div class="admin-class-header-actions">
+          <span>${item.student_count} học sinh</span>
+          <button type="button" class="button ghost compact-button" data-class-rename="${item.id}" data-class-name="${escapeHtml(item.name)}">Đổi tên</button>
+          <button type="button" class="button ${item.is_archived ? "secondary" : "danger"} compact-button" data-class-archive="${item.id}" data-archived="${item.is_archived ? "1" : "0"}">${item.is_archived ? "Khôi phục" : "Lưu trữ"}</button>
+        </div>
       </header>
       <div class="admin-class-teachers">
         ${teachers.map((teacher) => `
@@ -173,8 +187,8 @@ async function refreshAdmin() {
         `).join("") || "<span>Chưa có tài khoản giáo viên.</span>"}
       </div>
       <form class="add-student-form" data-class-add="${item.id}">
-        <input aria-label="Mã học sinh" placeholder="Mã học sinh có sẵn" maxlength="20" required />
-        <button class="button ghost" type="submit">Thêm vào lớp</button>
+        <input aria-label="Mã học sinh" placeholder="Mã học sinh có sẵn" maxlength="20" required ${item.is_archived ? "disabled" : ""} />
+        <button class="button ghost" type="submit" ${item.is_archived ? "disabled" : ""}>Thêm vào lớp</button>
       </form>
     </article>
   `).join("");
@@ -279,6 +293,54 @@ async function onAdminUsersClick(event) {
       toast("Đã đặt lại mật khẩu");
     }
   } catch (error) { toast(error.message, true); }
+}
+
+async function onAdminUserRoleChange(event) {
+  const select = event.target.closest("[data-user-role]");
+  if (!select) return;
+  try {
+    await updateUser(Number(select.dataset.userRole), { role: select.value });
+    await refreshAdmin();
+    toast("Đã cập nhật vai trò tài khoản");
+  } catch (error) {
+    await refreshUsers();
+    toast(error.message, true);
+  }
+}
+
+async function onAdminClassesClick(event) {
+  const renameButton = event.target.closest("[data-class-rename]");
+  const archiveButton = event.target.closest("[data-class-archive]");
+  try {
+    if (renameButton) {
+      const nextName = window.prompt("Tên lớp mới:", renameButton.dataset.className || "");
+      if (!nextName || nextName.trim() === renameButton.dataset.className) return;
+      await api(`/api/classes/${renameButton.dataset.classRename}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nextName }),
+      });
+      await refreshAdmin();
+      await refreshSession();
+      toast("Đã đổi tên lớp");
+    } else if (archiveButton) {
+      const archived = archiveButton.dataset.archived === "1";
+      const confirmMsg = archived
+        ? "Khôi phục lớp học này để tiếp tục giảng dạy?"
+        : "Lưu trữ lớp học này? Lớp sẽ ẩn khỏi danh sách giảng dạy nhưng vẫn giữ lịch sử.";
+      if (!window.confirm(confirmMsg)) return;
+      await api(`/api/classes/${archiveButton.dataset.classArchive}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_archived: !archived }),
+      });
+      await refreshAdmin();
+      await refreshSession();
+      toast(archived ? "Đã khôi phục lớp" : "Đã lưu trữ lớp");
+    }
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 async function refreshVideoDevices() {
@@ -628,6 +690,10 @@ async function onClassChange(event) {
   if (streaming) stopCamera();
   state.session = null;
   state.alerts = [];
+  state.searchQuery = "";
+  state.studentFilter = "ALL";
+  $("#student-search-input").value = "";
+  $("#student-filter-select").value = "ALL";
   await Promise.all([refreshSession(), refreshAlerts()]);
   if (streaming) await startCamera();
 }
@@ -708,6 +774,7 @@ function renderSession() {
     ? `Bắt đầu lúc ${formatTime(state.session.created_at)} · tính muộn sau ${state.session.late_after_minutes} phút`
     : "";
   $("#session-title-input").disabled = active;
+  $("#session-late-input").disabled = active;
   $("#start-session-button").disabled = active;
   $("#finish-session-button").disabled = !active;
   $("#export-session-button").disabled = !active;
@@ -716,7 +783,25 @@ function renderSession() {
   $("#consent-note").textContent = waiting ? `${waiting} học sinh chờ đồng ý: camera chưa nhận diện các em này` : "";
   updatePickButtonState();
   $("#reset-called-button").disabled = !active || !called;
-  $("#student-list").innerHTML = state.students.map((student) => `
+  const query = state.searchQuery.trim().toLowerCase();
+  const filtered = state.students.filter((student) => {
+    if (query) {
+      const matchName = student.fullname.toLowerCase().includes(query);
+      const matchCode = student.student_code.toLowerCase().includes(query);
+      if (!matchName && !matchCode) return false;
+    }
+    if (state.studentFilter === "PRESENT") return Boolean(student.is_present);
+    if (state.studentFilter === "LATE") return Boolean(student.is_present && student.is_late);
+    if (state.studentFilter === "ABSENT") return !student.is_present;
+    if (state.studentFilter === "UNCONSENTED") return student.consent_status !== "GRANTED" || !student.has_face;
+    return true;
+  });
+  const emptyMessage = state.students.length
+    ? "Không có học sinh phù hợp bộ lọc."
+    : state.classId
+      ? "Chưa có học sinh. Bấm nút + ở mục Đăng ký học sinh để thêm."
+      : "Bạn chưa được phân công lớp nào. Hãy liên hệ Quản trị.";
+  $("#student-list").innerHTML = filtered.map((student) => `
     <tr>
       <td><div class="student-cell"><span class="mini-avatar">${escapeHtml(initials(student.fullname))}</span><span>${escapeHtml(student.fullname)}${student.has_face ? "" : '<span class="source-tag missing-face">Chưa có ảnh khuôn mặt</span>'}</span></div></td>
       <td>${escapeHtml(student.student_code)}</td>
@@ -728,10 +813,11 @@ function renderSession() {
       <td class="desk-only">${consentSelect(student)}</td>
       <td class="desk-only"><div class="row-actions">
         <button type="button" class="button ghost" data-reenroll="${student.id}" title="Cập nhật ảnh khuôn mặt">${student.has_face ? "Ảnh" : "+ Ảnh"}</button>
+        <button type="button" class="button ghost" data-consent-history="${student.id}" title="Xem lịch sử đồng ý">Nhật ký</button>
         <button type="button" class="button danger" data-delete="${student.id}" title="Xóa học sinh">Xóa</button>
       </div></td>
     </tr>
-  `).join("") || `<tr><td colspan="7" class="empty-row">${state.classId ? "Chưa có học sinh. Bấm nút + ở mục Đăng ký học sinh để thêm." : "Bạn chưa được phân công lớp nào. Hãy liên hệ Quản trị."}</td></tr>`;
+  `).join("") || `<tr><td colspan="7" class="empty-row">${emptyMessage}</td></tr>`;
 }
 
 const CONSENT_TEXT = {
@@ -847,8 +933,35 @@ function onStudentListClick(event) {
     reenrollStudent(Number(reenroll.dataset.reenroll));
     return;
   }
+  const consentHistory = event.target.closest("[data-consent-history]");
+  if (consentHistory) {
+    showConsentHistory(Number(consentHistory.dataset.consentHistory));
+    return;
+  }
   const remove = event.target.closest("[data-delete]");
   if (remove) deleteStudent(Number(remove.dataset.delete));
+}
+
+async function showConsentHistory(studentId) {
+  const student = state.students.find((item) => item.id === studentId);
+  try {
+    const events = await api(`/api/students/${studentId}/consent-events`);
+    $("#report-title").textContent = student
+      ? `Lịch sử đồng ý · ${student.fullname}`
+      : "Lịch sử đồng ý sinh trắc";
+    $("#report-body").innerHTML = events.length
+      ? `<div class="consent-history-list">${events.map((item) => `
+          <div class="consent-event-item">
+            <strong>${escapeHtml(CONSENT_TEXT[item.status] || item.status)}</strong>
+            <small>${formatDateTime(item.recorded_at)} · Người ghi nhận: ${escapeHtml(item.recorded_by_name)}</small>
+            ${item.note ? `<small>Ghi chú: ${escapeHtml(item.note)}</small>` : ""}
+          </div>
+        `).join("")}</div>`
+      : "<p>Chưa có sự kiện đồng ý nào được ghi nhận.</p>";
+    $("#report-modal").classList.add("visible");
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 function summaryGrid(summary) {
@@ -909,7 +1022,44 @@ async function showHistory() {
   } catch (error) { toast(error.message, true); }
 }
 
+async function showClassReport() {
+  if (!state.classId) {
+    toast("Vui lòng chọn lớp học trước", true);
+    return;
+  }
+  try {
+    const report = await api(`/api/classes/${state.classId}/report`);
+    $("#report-title").textContent = `Chuyên cần · ${report.class_name}`;
+    $("#report-body").innerHTML = `
+      <span class="report-meta">Tổng số buổi học đã ghi nhận: <strong>${report.total_sessions}</strong></span>
+      ${report.students.length
+        ? `<div class="table-wrap"><table>
+            <thead><tr><th>Học sinh</th><th>Mã số</th><th>Có mặt</th><th>Muộn</th><th>Vắng</th><th>Tỷ lệ</th></tr></thead>
+            <tbody>${report.students.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.fullname)}</td>
+                <td>${escapeHtml(item.student_code)}</td>
+                <td>${item.present}/${item.sessions}</td>
+                <td>${item.late}</td>
+                <td>${item.absent}</td>
+                <td><strong>${item.attendance_rate}%</strong></td>
+              </tr>
+            `).join("")}</tbody>
+          </table></div>`
+        : "<p>Chưa có học sinh nào trong lớp.</p>"}
+    `;
+    $("#report-modal").classList.add("visible");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 function onReportClick(event) {
+  const dismissAlert = event.target.closest("[data-report-dismiss-alert]");
+  if (dismissAlert) {
+    dismissBehaviorAlert(Number(dismissAlert.dataset.reportDismissAlert), true);
+    return;
+  }
   const exportButton = event.target.closest("[data-export]");
   if (exportButton) {
     exportSession(exportButton.dataset.export);
@@ -922,10 +1072,19 @@ function onReportClick(event) {
 async function createSession() {
   if (!state.classId) throw new Error("Vui lòng chọn lớp học trước");
   const title = $("#session-title-input").value.trim();
+  const lateRaw = $("#session-late-input").value.trim();
+  const payload = { class_id: state.classId, title: title || null };
+  if (lateRaw !== "") {
+    const minutes = Number(lateRaw);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 180) {
+      throw new Error("Ngưỡng đi muộn phải là số nguyên từ 0 đến 180 phút");
+    }
+    payload.late_after_minutes = minutes;
+  }
   state.session = await api("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ class_id: state.classId, title: title || null }),
+    body: JSON.stringify(payload),
   });
   state.students = state.session.students;
   renderSession();
@@ -963,6 +1122,7 @@ async function finishSession() {
     const finished = await api(`/api/sessions/${state.session.id}/finish`, { method: "POST" });
     state.session = null;
     $("#session-title-input").value = "";
+    $("#session-late-input").value = "";
     await refreshSession();
     toast("Đã kết thúc phiên học");
     showSessionReport(finished.id);
@@ -1486,12 +1646,80 @@ function renderAlerts() {
     ? String(state.session.summary.behaviors)
     : String(state.alerts.length);
   $("#clear-alerts-button").disabled = state.alerts.length === 0;
-  $("#alert-list").innerHTML = state.alerts.map((alert) => `
+  $("#alert-list").innerHTML = state.alerts.map((alert, index) => `
     <div class="alert-item">
       <strong>${escapeHtml(alert.label || alert.behavior_type)} · ${escapeHtml(alertName(alert))}</strong>
       <span>${alert.timestamp ? new Date(alert.timestamp).toLocaleString("vi-VN") : "Vừa phát hiện"}</span>
+      ${alert.snapshot_url || alert.id ? `<div class="alert-actions">
+        ${alert.snapshot_url ? `<button type="button" class="button ghost compact-button" data-alert-view="${index}">Xem ảnh</button>` : ""}
+        ${alert.id ? `<button type="button" class="button danger compact-button" data-alert-dismiss="${alert.id}">Bỏ qua</button>` : ""}
+      </div>` : ""}
     </div>
   `).join("") || '<p class="empty-note">Chưa có cảnh báo. Hành vi được phát hiện sẽ hiện ở đây.</p>';
+}
+
+function viewBehaviorSnapshot(index) {
+  const alert = state.alerts[index];
+  if (!alert || !alert.snapshot_url) return;
+  $("#report-title").textContent = `${alert.label || alert.behavior_type} · ${alertName(alert)}`;
+  $("#report-body").innerHTML = `
+    <span class="report-meta">${alert.timestamp ? new Date(alert.timestamp).toLocaleString("vi-VN") : "Vừa phát hiện"}</span>
+    <img class="snapshot-preview" src="${escapeHtml(alert.snapshot_url)}" alt="Ảnh bằng chứng hành vi" />
+    ${alert.id ? `<button type="button" class="button danger full" data-report-dismiss-alert="${alert.id}">Xác nhận báo nhầm &amp; xóa cảnh báo</button>` : ""}
+  `;
+  $("#report-modal").classList.add("visible");
+}
+
+async function dismissBehaviorAlert(logId, closeModal = false) {
+  try {
+    const existing = state.alerts.find((item) => item.id === logId);
+    await api(`/api/behaviors/${logId}`, { method: "DELETE" });
+    state.alerts = state.alerts.filter((item) => item.id !== logId);
+    if (
+      state.session &&
+      state.session.summary &&
+      (!existing || existing.session_id === state.session.id)
+    ) {
+      state.session.summary.behaviors = Math.max(0, state.session.summary.behaviors - 1);
+    }
+    renderAlerts();
+    if (closeModal) $("#report-modal").classList.remove("visible");
+    toast("Đã xóa cảnh báo");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function onAlertListClick(event) {
+  const view = event.target.closest("[data-alert-view]");
+  if (view) {
+    viewBehaviorSnapshot(Number(view.dataset.alertView));
+    return;
+  }
+  const dismiss = event.target.closest("[data-alert-dismiss]");
+  if (dismiss) dismissBehaviorAlert(Number(dismiss.dataset.alertDismiss));
+}
+
+async function changeOwnPassword(event) {
+  event.preventDefault();
+  const submitButton = event.target.querySelector('button[type="submit"]');
+  if (submitButton) submitButton.disabled = true;
+  try {
+    await api("/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        current_password: $("#current-password-input").value,
+        new_password: $("#new-password-input").value,
+      }),
+    });
+    event.target.reset();
+    toast("Đã cập nhật mật khẩu");
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
 }
 
 async function clearAlerts() {
@@ -1548,11 +1776,24 @@ $("#student-list").addEventListener("click", onStudentListClick);
 $("#student-list").addEventListener("change", onConsentChange);
 $("#export-session-button").addEventListener("click", () => state.session && exportSession(state.session.id));
 $("#history-button").addEventListener("click", showHistory);
+$("#class-report-button").addEventListener("click", showClassReport);
+$("#student-search-input").addEventListener("input", (event) => {
+  state.searchQuery = event.target.value;
+  renderSession();
+});
+$("#student-filter-select").addEventListener("change", (event) => {
+  state.studentFilter = event.target.value;
+  renderSession();
+});
+$("#alert-list").addEventListener("click", onAlertListClick);
+$("#change-password-form").addEventListener("submit", changeOwnPassword);
 $("#admin-button").addEventListener("click", openAdmin);
 $("#close-admin-button").addEventListener("click", () => $("#admin-modal").classList.remove("visible"));
 $("#new-user-form").addEventListener("submit", createUser);
 $("#admin-users").addEventListener("click", onAdminUsersClick);
+$("#admin-users").addEventListener("change", onAdminUserRoleChange);
 $("#new-class-form").addEventListener("submit", createClass);
+$("#admin-class-list").addEventListener("click", onAdminClassesClick);
 $("#admin-class-list").addEventListener("change", onClassTeacherChange);
 $("#admin-class-list").addEventListener("submit", onAddStudentToClass);
 $("#class-select").addEventListener("change", onClassChange);

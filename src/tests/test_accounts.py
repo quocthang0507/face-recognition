@@ -208,3 +208,30 @@ def test_admin_resets_a_password(client: TestClient, db: Session) -> None:
 
     db.expire_all()
     assert UserService.authenticate(db, "gv.an", "mat-khau-moi") is not None
+
+
+def test_user_changes_own_password_and_rotates_token(
+    client: TestClient, db: Session
+) -> None:
+    create_teacher(db)
+    login(client, "gv.an", "mat-khau-gv")
+    old_cookie = client.cookies.get("classroom_teacher")
+
+    wrong = client.post(
+        "/api/auth/change-password",
+        json={"current_password": "sai-mat-khau", "new_password": "mat-khau-moi-123"},
+    )
+    assert wrong.status_code == 409
+
+    ok = client.post(
+        "/api/auth/change-password",
+        json={"current_password": "mat-khau-gv", "new_password": "mat-khau-moi-123"},
+    )
+    assert ok.status_code == 200
+    assert client.get("/api/auth/status").status_code == 200
+    assert client.cookies.get("classroom_teacher") != old_cookie
+
+    client.cookies.set("classroom_teacher", old_cookie)
+    assert client.get("/api/auth/status").status_code == 401
+    db.expire_all()
+    assert UserService.authenticate(db, "gv.an", "mat-khau-moi-123") is not None

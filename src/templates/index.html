@@ -90,6 +90,7 @@
           <article class="picker-card surface">
             <h2>Điều khiển phiên</h2>
             <input id="session-title-input" class="session-title-input" aria-label="Tên buổi học" placeholder="Tên buổi học (VD: Toán 7A - Tiết 2)" maxlength="120" />
+            <input id="session-late-input" class="session-late-input desk-only" type="number" min="0" max="180" step="1" aria-label="Ngưỡng đi muộn (phút)" placeholder="Đi muộn sau (phút, mặc định 10)" />
             <p id="session-meta" class="session-meta"></p>
             <div class="session-actions">
               <button id="start-session-button" class="button secondary"><svg class="icon"><use href="#i-play"/></svg>Bắt đầu</button>
@@ -97,9 +98,10 @@
             </div>
             <button id="pick-button" class="button primary full pick-button" disabled><svg class="icon"><use href="#i-shuffle"/></svg>Gọi ngẫu nhiên</button>
             <button id="reset-called-button" class="button ghost full desk-only" disabled><svg class="icon"><use href="#i-reset"/></svg>Reset lượt gọi</button>
-            <div class="session-actions session-actions-last desk-only">
+            <div class="session-actions session-actions-3 session-actions-last desk-only">
               <button id="export-session-button" class="button ghost" disabled><svg class="icon"><use href="#i-download"/></svg>Xuất CSV</button>
               <button id="history-button" class="button ghost"><svg class="icon"><use href="#i-history"/></svg>Lịch sử</button>
+              <button id="class-report-button" class="button ghost">Chuyên cần</button>
             </div>
           </article>
 
@@ -142,6 +144,16 @@
             <h2>Danh sách lớp</h2>
             <span id="consent-note" class="table-hint consent-note desk-only"></span>
             <span id="attendance-hint" class="table-hint">Bấm vào trạng thái để điểm danh thủ công</span>
+          </div>
+          <div class="roster-toolbar desk-only">
+            <input id="student-search-input" type="search" aria-label="Tìm học sinh" placeholder="Tìm theo tên hoặc mã học sinh..." />
+            <select id="student-filter-select" class="select-field" aria-label="Lọc trạng thái học sinh">
+              <option value="ALL">Tất cả</option>
+              <option value="PRESENT">Có mặt</option>
+              <option value="LATE">Đi muộn</option>
+              <option value="ABSENT">Chưa điểm danh / Vắng</option>
+              <option value="UNCONSENTED">Chưa đồng ý / Thiếu ảnh</option>
+            </select>
           </div>
           <div class="table-wrap">
             <table>
@@ -259,6 +271,15 @@
                 <select id="tts-voice-select-modal" class="select-field"></select>
               </div>
               <p id="tts-status" class="setting-note"></p>
+            </fieldset>
+
+            <fieldset class="settings-groupbox desk-only">
+              <legend>Đổi mật khẩu tài khoản</legend>
+              <form id="change-password-form" class="password-form">
+                <input id="current-password-input" type="password" aria-label="Mật khẩu hiện tại" placeholder="Mật khẩu hiện tại" autocomplete="current-password" required />
+                <input id="new-password-input" type="password" aria-label="Mật khẩu mới" placeholder="Mật khẩu mới (từ 8 ký tự)" autocomplete="new-password" minlength="8" required />
+                <button class="button secondary" type="submit">Cập nhật mật khẩu</button>
+              </form>
             </fieldset>
           </div>
         </div>

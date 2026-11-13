@@ -232,3 +232,36 @@ def test_reset_called_keeps_call_history_for_reports(db: Session) -> None:
     assert state.is_called is False
     assert state.called_at is not None
     assert ClassroomService.summary(db, classroom_session).called == 1
+
+
+def test_start_session_supports_custom_late_after_minutes(db: Session) -> None:
+    session = ClassroomService.start_session(db, title="Kiểm tra", late_after_minutes=0)
+    assert session.late_after_minutes == 0
+    ClassroomService.finish_session(db, session.id)
+
+    with pytest.raises(DomainError, match="đi muộn"):
+        ClassroomService.start_session(db, late_after_minutes=-1)
+    with pytest.raises(DomainError, match="đi muộn"):
+        ClassroomService.start_session(db, late_after_minutes=181)
+
+
+def test_behavior_log_delete_one_keeps_shared_snapshot_until_last_log(
+    db: Session,
+) -> None:
+    class RecordingStorage:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete_snapshot(self, name: str) -> None:
+            self.deleted.append(name)
+
+    classroom_session = ClassroomService.start_session(db)
+    first = BehaviorLogService.create(db, classroom_session.id, "SLEEPING", "s.jpg")
+    second = BehaviorLogService.create(db, classroom_session.id, "CHEATING", "s.jpg")
+    storage = RecordingStorage()
+
+    BehaviorLogService.delete_one(db, first.id, storage)
+    assert storage.deleted == []
+
+    BehaviorLogService.delete_one(db, second.id, storage)
+    assert storage.deleted == ["s.jpg"]

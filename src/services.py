@@ -27,6 +27,7 @@ from .models import (
     class_students,
     class_teachers,
     as_utc,
+    iso_utc,
     utc_now,
 )
 from .storage import PrivateStorage
@@ -92,7 +93,12 @@ def is_late(state: SessionStudent, classroom_session: ClassroomSession) -> bool:
     started = as_utc(classroom_session.created_at)
     if not state.is_present or checked_in is None or started is None:
         return False
-    return checked_in - started > timedelta(minutes=settings.late_after_minutes)
+    grace = (
+        settings.late_after_minutes
+        if classroom_session.late_after_minutes is None
+        else classroom_session.late_after_minutes
+    )
+    return checked_in - started > timedelta(minutes=grace)
 
 
 class UserService:
@@ -210,6 +216,21 @@ class UserService:
 
         user.token_version += 1
         db.commit()
+
+    @staticmethod
+    def change_password(
+        db: Session, user_id: int, current_password: str, new_password: str
+    ) -> User:
+        """Change one account's own password after verifying the current one."""
+
+        user = UserService.get(db, user_id)
+        if not verify_password(current_password, user.password_hash):
+            raise DomainError("Mật khẩu hiện tại không chính xác")
+        UserService._validate_password(new_password)
+        user.password_hash = hash_password(new_password)
+        user.token_version += 1
+        db.commit()
+        return user
 
     @staticmethod
     def ensure_admin(db: Session, password: str) -> None:
@@ -465,6 +486,28 @@ class ConsentService:
             db.scalars(select(BehaviorLog).where(BehaviorLog.snapshot_path.in_(snapshots)))
         )
 
+    @staticmethod
+    def history(db: Session, student_id: int) -> list[dict[str, object]]:
+        """Return chronological consent decisions for one student, newest first."""
+
+        StudentService.get(db, student_id)
+        rows = db.execute(
+            select(ConsentEvent, User.fullname, User.username)
+            .outerjoin(User, ConsentEvent.recorded_by == User.id)
+            .where(ConsentEvent.student_id == student_id)
+            .order_by(ConsentEvent.recorded_at.desc(), ConsentEvent.id.desc())
+        ).all()
+        return [
+            {
+                "id": event.id,
+                "status": event.status,
+                "note": event.note,
+                "recorded_at": iso_utc(event.recorded_at),
+                "recorded_by_name": fullname or username or "Hệ thống",
+            }
+            for event, fullname, username in rows
+        ]
+
 
 class AccessLogService:
     """Keep a trail of who opened protected student images."""
@@ -523,14 +566,11 @@ class ClassService:
         return school_class
 
     @staticmethod
-    def list_all(db: Session) -> list[SchoolClass]:
-        return list(
-            db.scalars(
-                select(SchoolClass)
-                .where(SchoolClass.is_archived.is_(False))
-                .order_by(SchoolClass.name)
-            )
-        )
+    def list_all(db: Session, include_archived: bool = False) -> list[SchoolClass]:
+        query = select(SchoolClass).order_by(SchoolClass.name)
+        if not include_archived:
+            query = query.where(SchoolClass.is_archived.is_(False))
+        return list(db.scalars(query))
 
     @staticmethod
     def list_for_teacher(db: Session, user_id: int) -> list[SchoolClass]:
@@ -674,6 +714,70 @@ class ClassService:
         db.commit()
         cache.bump("students")
 
+    @staticmethod
+    def attendance_report(db: Session, class_id: int) -> dict[str, object]:
+        """Summarize attendance across all recorded sessions of a class."""
+
+        school_class = ClassService.get(db, class_id)
+        sessions = list(
+            db.scalars(
+                select(ClassroomSession)
+                .where(ClassroomSession.class_id == class_id)
+                .order_by(ClassroomSession.created_at.desc(), ClassroomSession.id.desc())
+            )
+        )
+        session_map = {item.id: item for item in sessions}
+        stats: dict[int, dict[str, int]] = {}
+        if session_map:
+            entries = db.scalars(
+                select(SessionStudent).where(SessionStudent.session_id.in_(session_map))
+            )
+            for entry in entries:
+                bucket = stats.setdefault(
+                    entry.student_id,
+                    {"sessions": 0, "present": 0, "late": 0, "absent": 0, "called": 0},
+                )
+                bucket["sessions"] += 1
+                if entry.is_present:
+                    bucket["present"] += 1
+                    if is_late(entry, session_map[entry.session_id]):
+                        bucket["late"] += 1
+                else:
+                    bucket["absent"] += 1
+                if entry.is_called or entry.called_at is not None:
+                    bucket["called"] += 1
+        rows = []
+        for student in StudentService.list_all(db, class_id):
+            bucket = stats.get(
+                student.id,
+                {"sessions": 0, "present": 0, "late": 0, "absent": 0, "called": 0},
+            )
+            rate = (
+                round(bucket["present"] * 100 / bucket["sessions"])
+                if bucket["sessions"]
+                else 0
+            )
+            rows.append(
+                {
+                    "student_id": student.id,
+                    "student_code": student.student_code,
+                    "fullname": student.fullname,
+                    "consent_status": student.consent_status,
+                    "sessions": bucket["sessions"],
+                    "present": bucket["present"],
+                    "late": bucket["late"],
+                    "absent": bucket["absent"],
+                    "called": bucket["called"],
+                    "attendance_rate": rate,
+                }
+            )
+        return {
+            "class_id": school_class.id,
+            "class_name": school_class.name,
+            "total_sessions": len(sessions),
+            "students": rows,
+        }
+
 
 @dataclass(frozen=True)
 class SessionSummary:
@@ -710,12 +814,15 @@ class ClassroomService:
         title: str | None = None,
         class_id: int | None = None,
         teacher_id: int | None = None,
+        late_after_minutes: int | None = None,
     ) -> ClassroomSession:
         """Start a lesson and initialize attendance state for its students."""
 
         active = ClassroomService.get_active_session(db, class_id)
         if active is not None:
             raise DomainError("Có phiên học đang hoạt động")
+        if late_after_minutes is not None and not (0 <= late_after_minutes <= 180):
+            raise DomainError("Ngưỡng đi muộn phải từ 0 đến 180 phút")
         if class_id is not None:
             school_class = ClassService.get(db, class_id)
             if school_class.is_archived:
@@ -728,6 +835,11 @@ class ClassroomService:
             title=normalized_title,
             class_id=class_id,
             teacher_id=teacher_id,
+            late_after_minutes=(
+                settings.late_after_minutes
+                if late_after_minutes is None
+                else late_after_minutes
+            ),
         )
         db.add(session)
         db.flush()
@@ -1021,6 +1133,24 @@ class BehaviorLogService:
                 .limit(limit)
             )
         )
+
+    @staticmethod
+    def get(db: Session, log_id: int) -> BehaviorLog:
+        """Return one behavior log or raise if it does not exist."""
+
+        log = db.get(BehaviorLog, log_id)
+        if log is None:
+            raise NotFoundError("Không tìm thấy cảnh báo")
+        return log
+
+    @staticmethod
+    def delete_one(
+        db: Session, log_id: int, storage: PrivateStorage
+    ) -> None:
+        """Delete one behavior log and remove its snapshot if unshared."""
+
+        log = BehaviorLogService.get(db, log_id)
+        BehaviorLogService._delete_logs(db, storage, [log])
 
     @staticmethod
     def cleanup_old(

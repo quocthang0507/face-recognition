@@ -75,3 +75,34 @@ def test_csv_export_opens_in_excel_with_student_names(dashboard, tmp_path) -> No
     raw = target.read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")
     assert "Nguyễn Văn An" in raw.decode("utf-8-sig")
+
+
+def test_roster_search_and_status_filter(dashboard) -> None:
+    seed_students(dashboard, ("HS001", "Nguyễn Văn An"), ("HS002", "Trần Thị Bình"))
+    start_session(dashboard)
+    mark_attendance(dashboard, "HS001", present=True)
+
+    dashboard.fill("#student-search-input", "HS002")
+    expect(dashboard.locator("#student-list tr")).to_have_count(1)
+    expect(dashboard.locator("#student-list")).to_contain_text("Trần Thị Bình")
+
+    dashboard.fill("#student-search-input", "")
+    dashboard.select_option("#student-filter-select", "PRESENT")
+    expect(dashboard.locator("#student-list tr")).to_have_count(1)
+    expect(dashboard.locator("#student-list")).to_contain_text("Nguyễn Văn An")
+
+
+def test_custom_late_threshold_and_class_report_modal(dashboard) -> None:
+    seed_students(dashboard, ("HS001", "Nguyễn Văn An"))
+    dashboard.fill("#session-late-input", "5")
+    start_session(dashboard, "Tiết tùy chỉnh")
+    expect(dashboard.locator("#session-meta")).to_contain_text("5 phút")
+
+    mark_attendance(dashboard, "HS001", present=True)
+    dashboard.click("#finish-session-button")
+    dashboard.click("#close-report-button")
+
+    dashboard.click("#class-report-button")
+    expect(dashboard.locator("#report-title")).to_contain_text("Chuyên cần")
+    expect(dashboard.locator("#report-body")).to_contain_text("Nguyễn Văn An")
+    expect(dashboard.locator("#report-body")).to_contain_text("100%")

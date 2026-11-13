@@ -60,3 +60,14 @@ def test_deleting_student_removes_row(dashboard) -> None:
     row.locator("[data-delete]").click()
 
     expect(dashboard.locator("#student-list tr")).to_have_count(1)
+
+
+def test_student_consent_history_modal(dashboard) -> None:
+    seed_students(dashboard, ("HS001", "Nguyễn Văn An"))
+    row = dashboard.locator("#student-list tr", has_text="Nguyễn Văn An")
+    row.locator("[data-consent]").select_option("GRANTED")
+    expect(row.locator("[data-consent]")).to_have_value("GRANTED")
+
+    row.locator("[data-consent-history]").click()
+    expect(dashboard.locator("#report-title")).to_contain_text("Nguyễn Văn An")
+    expect(dashboard.locator("#report-body")).to_contain_text("Đã đồng ý")

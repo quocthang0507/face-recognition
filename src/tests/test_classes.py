@@ -381,3 +381,48 @@ def test_mark_present_ignores_student_removed_from_class(db: Session, school) ->
         state.student_id for state in ClassroomService.attendance(db, session_a.id)
     }
     assert school["student_b"].id not in enrolled_ids
+
+
+def test_admin_can_list_archived_classes_when_requested(client, db, school) -> None:
+    ClassService.update(db, school["class_a"].id, is_archived=True)
+
+    sign_in(client, "gv.a")
+    teacher_classes = client.get("/api/classes?include_archived=true").json()
+    assert [item["id"] for item in teacher_classes] == []
+
+    client.post("/api/auth/logout")
+    client.cookies.clear()
+    sign_in(client, "quan.tri")
+    active_only = client.get("/api/classes").json()
+    with_archived = client.get("/api/classes?include_archived=true").json()
+    assert [item["name"] for item in active_only] == ["Văn 7B"]
+    assert {item["name"] for item in with_archived} == {"Toán 7A", "Văn 7B"}
+
+
+def test_class_attendance_report_summarizes_sessions_and_respects_access(
+    client, db, school
+) -> None:
+    s1 = ClassroomService.start_session(db, title="Tiết 1", class_id=school["class_a"].id)
+    ClassroomService.set_attendance(db, s1.id, school["student_a"].id, True)
+    ClassroomService.pick_random(db, s1.id)
+    ClassroomService.finish_session(db, s1.id)
+
+    s2 = ClassroomService.start_session(db, title="Tiết 2", class_id=school["class_a"].id)
+    ClassroomService.set_attendance(db, s2.id, school["student_a"].id, False, note="nghỉ")
+    ClassroomService.finish_session(db, s2.id)
+
+    sign_in(client, "gv.b")
+    assert client.get(f"/api/classes/{school['class_a'].id}/report").status_code == 403
+
+    client.post("/api/auth/logout")
+    client.cookies.clear()
+    sign_in(client, "gv.a")
+    report = client.get(f"/api/classes/{school['class_a'].id}/report").json()
+    assert report["total_sessions"] == 2
+    assert len(report["students"]) == 1
+    row = report["students"][0]
+    assert row["student_code"] == "A1"
+    assert row["present"] == 1
+    assert row["absent"] == 1
+    assert row["called"] == 1
+    assert row["attendance_rate"] == 50

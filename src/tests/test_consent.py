@@ -323,3 +323,53 @@ def test_expired_backups_are_deleted(tmp_path: Path) -> None:
     assert not expired.exists()
     assert recent.exists()
     assert database.exists()
+
+
+def test_student_consent_events_endpoint_returns_audit_trail_and_enforces_access(
+    client, db, school, storage
+) -> None:
+    ConsentService.record(
+        db, school["student"].id, "GRANTED", school["teacher"].id, storage, note="Phiếu 01"
+    )
+    ConsentService.record(
+        db, school["student"].id, "WITHDRAWN", school["teacher"].id, storage, note="Phụ huynh yêu cầu"
+    )
+
+    sign_in(client, "gv.b")
+    assert (
+        client.get(f"/api/students/{school['student'].id}/consent-events").status_code
+        == 403
+    )
+
+    client.post("/api/auth/logout")
+    client.cookies.clear()
+    sign_in(client, "gv.a")
+    response = client.get(f"/api/students/{school['student'].id}/consent-events")
+    assert response.status_code == 200
+    events = response.json()
+    assert [item["status"] for item in events] == ["WITHDRAWN", "GRANTED"]
+    assert events[0]["note"] == "Phụ huynh yêu cầu"
+    assert events[0]["recorded_by_name"] == "GV A"
+
+
+def test_delete_single_behavior_log_checks_access_and_cleans_unshared_snapshot(
+    client, db, school, storage
+) -> None:
+    log_a = add_evidence(db, school, school["student"].id, "only-a.enc")
+    session_a = ClassroomService.get_session(db, log_a.session_id)
+    shared_1 = BehaviorLogService.create(
+        db, session_a.id, "CHEATING", "shared-a.enc", school["student"].id
+    )
+    BehaviorLogService.create(db, session_a.id, "TALKING", "shared-a.enc", None)
+
+    sign_in(client, "gv.b")
+    assert client.delete(f"/api/behaviors/{log_a.id}").status_code == 403
+
+    client.post("/api/auth/logout")
+    client.cookies.clear()
+    sign_in(client, "gv.a")
+    assert client.delete(f"/api/behaviors/{shared_1.id}").status_code == 200
+    assert storage.snapshots_deleted == []
+
+    assert client.delete(f"/api/behaviors/{log_a.id}").status_code == 200
+    assert storage.snapshots_deleted == ["only-a.enc"]

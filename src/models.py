@@ -135,6 +135,7 @@ class ClassroomSession(Base):
     teacher_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), nullable=True
     )
+    late_after_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     students: Mapped[list["SessionStudent"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
